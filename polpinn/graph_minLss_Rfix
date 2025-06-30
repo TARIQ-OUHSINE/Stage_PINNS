@@ -1,0 +1,16 @@
+import matplotlib.pyplot as plt
+
+# Exemple de données simulées — à remplacer par tes vraies données
+radii_nm = [50, 100, 150, 200, 225, 250, 275, 300]  # R init en nanomètres
+min_losses = [0.012, 0.009, 0.0075, 0.005, 0.0042, 0.006, 0.0078, 0.01]  # valeurs de loss correspondantes
+
+# Tracé
+plt.figure(figsize=(8, 6))
+plt.plot(radii_nm, min_losses, marker='o', linestyle='-', color='blue')
+plt.xlabel("Rayon initial (nm)")
+plt.ylabel("Loss minimale")
+plt.title("Évolution de la loss minimale en fonction du rayon initial R")
+plt.grid(True)
+plt.tight_layout()
+plt.savefig("loss_vs_radius.png")  # Sauvegarde de l'image
+plt.show()
