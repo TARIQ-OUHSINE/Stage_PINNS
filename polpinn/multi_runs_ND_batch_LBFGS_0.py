@@ -17,7 +17,6 @@ from tqdm import tqdm
 import copy
 import math
 import matplotlib.pyplot as plt
-import argparse ### MODIFIÉ ###: Ajout de la bibliothèque pour les arguments
 
 # ==============================================================================
 # SECTION 1: OUTILS ET DÉFINITIONS (Basé sur tool.py)
@@ -114,126 +113,216 @@ class DataAugmentation:
         return result.x, result.fun
 
 # ==============================================================================
-# SECTION 2: MOTEUR D'ENTRAÎNEMENT PAR MINI-BATCHS ET L-BFGS (AUCUN CHANGEMENT ICI)
+# SECTION 2: MOTEUR D'ENTRAÎNEMENT PAR MINI-BATCHS ET L-BFGS
 # ==============================================================================
 
 def cost_original_batch(model, F_f, S_f, S_j, X_fick_batch, X_data_batch):
+    """
+    MODIFIÉ POUR LES BATCHS: Calcule la perte sur un mini-batch de points.
+    """
     R = model.R
+    
+    # --- Perte L_fick sur le batch de points de Fick ---
     X_fick_batch.requires_grad_(True)
     L_fick_f = torch.mean(torch.square(F_f(P_from_G(model(X_fick_batch), X_fick_batch), X_fick_batch)))
+
+    # --- Pertes sur les données (bord et initial) sur le batch de données ---
     X_data_batch.requires_grad_(True)
+    
+    # Sépare les points de données en conditions au bord et initiales
     t_vals = X_data_batch[:, 1]
+    
+    # Points pour L_solide et L_bord (t > 0)
     X_boundary_batch = X_data_batch[t_vals > 0]
     t_boundary_batch = X_boundary_batch[:, 1].view(-1, 1)
+    
+    # Points pour L_ini (t = 0)
     X_ini_batch = X_data_batch[t_vals == 0]
+
+    # Calcul des pertes sur les batchs
     L_solide = torch.mean(torch.square(model(X_boundary_batch) - S_f(t_boundary_batch)))
     L_bord = torch.mean(torch.square(P_from_G(model(X_boundary_batch), X_boundary_batch) - S_j(t_boundary_batch)))
+    
     if X_ini_batch.shape[0] > 0:
         L_ini = torch.mean(torch.square(P_from_G(model(X_ini_batch), X_ini_batch)))
     else:
+        # Si le batch ne contient pas de point t=0, la perte initiale est nulle pour ce batch
         L_ini = torch.tensor(0.0, device=X_fick_batch.device)
+
+    # --- Pondération dynamique ---
     loss_sum = L_solide + L_bord + L_ini + L_fick_f
     if loss_sum.item() > 1e-12:
-        gamma_solide = L_solide / loss_sum; gamma_bord = L_bord / loss_sum
-        gamma_ini = L_ini / loss_sum; gamma_fick_f = L_fick_f / loss_sum
+        gamma_solide = L_solide / loss_sum
+        gamma_bord = L_bord / loss_sum
+        gamma_ini = L_ini / loss_sum
+        gamma_fick_f = L_fick_f / loss_sum
         total_loss = (gamma_solide * L_solide + gamma_bord * L_bord + gamma_ini * L_ini + gamma_fick_f * L_fick_f)
-    else: total_loss = loss_sum
+    else:
+        total_loss = loss_sum
+
     loss_components = [loss_sum.item(), L_solide.item(), L_bord.item(), L_ini.item(), L_fick_f.item()]
     return total_loss, loss_components
 
 def cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total):
+    """
+    NOUVELLE FONCTION: Calcule la perte sur l'ensemble des points (full-batch) pour L-BFGS.
+    """
     R = model.R
+    
+    # --- Perte L_fick sur TOUS les points de Fick ---
     X_fick_total.requires_grad_(True)
     L_fick_f = torch.mean(torch.square(F_f(P_from_G(model(X_fick_total), X_fick_total), X_fick_total)))
+
+    # --- Pertes sur les données (bord et initial) ---
     X_data_total.requires_grad_(True)
     t_vals = X_data_total[:, 1]
-    X_boundary = X_data_total[t_vals > 0]; t_boundary = X_boundary[:, 1].view(-1, 1)
+    
+    X_boundary = X_data_total[t_vals > 0]
+    t_boundary = X_boundary[:, 1].view(-1, 1)
+    
     X_ini = X_data_total[t_vals == 0]
+
     L_solide = torch.mean(torch.square(model(X_boundary) - S_f(t_boundary)))
     L_bord = torch.mean(torch.square(P_from_G(model(X_boundary), X_boundary) - S_j(t_boundary)))
     L_ini = torch.mean(torch.square(P_from_G(model(X_ini), X_ini)))
+
+    # --- Pondération dynamique ---
     loss_sum = L_solide + L_bord + L_ini + L_fick_f
     if loss_sum.item() > 1e-12:
-        gamma_solide = L_solide / loss_sum; gamma_bord = L_bord / loss_sum
-        gamma_ini = L_ini / loss_sum; gamma_fick_f = L_fick_f / loss_sum
+        gamma_solide = L_solide / loss_sum
+        gamma_bord = L_bord / loss_sum
+        gamma_ini = L_ini / loss_sum
+        gamma_fick_f = L_fick_f / loss_sum
         total_loss = (gamma_solide * L_solide + gamma_bord * L_bord + gamma_ini * L_ini + gamma_fick_f * L_fick_f)
-    else: total_loss = loss_sum
+    else:
+        total_loss = loss_sum
+
     loss_components = [loss_sum.item(), L_solide.item(), L_bord.item(), L_ini.item(), L_fick_f.item()]
     return total_loss, loss_components
 
+
 def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
+    # === MODIFIÉ POUR UN ENTRAÎNEMENT EN 2 PHASES (Adam -> L-BFGS) ===
     torch.manual_seed(1234)
     var_R = params_pinns["var_R"]
     batch_size = params_pinns["batch_size"]
+    
     rayon_ini_norm, D_f_norm, ordre_R = normalisation(params["rayon_initialisation"], params["D_f"])
     params["ordre_R"] = ordre_R
-    model = Physics_informed_nn(nb_layer=params_pinns["nb_hidden_layer"], hidden_layer=params_pinns["nb_hidden_perceptron"], rayon_ini=rayon_ini_norm, coeff_normal=params["P0_j"], var_R=var_R)
+
+    model = Physics_informed_nn(
+        nb_layer=params_pinns["nb_hidden_layer"],
+        hidden_layer=params_pinns["nb_hidden_perceptron"],
+        rayon_ini=rayon_ini_norm,
+        coeff_normal=params["P0_j"],
+        var_R=var_R,
+    )
+    
     P0_f_norm = params["P0_f"] / params["P0_j"]
     F_f = Fick(D_f_norm, params["T_1"], P0_f_norm)
+    
+    # --- Création du DataSet complet de points de collocation ---
     print("Création du DataSet de points de collocation...")
-    def_t = params["def_t"]; R_item = rayon_ini_norm
-    nb_r_total, nb_t_total = 500, 500
+    def_t = params["def_t"]
+    R_item = rayon_ini_norm
+    
+    nb_r_total = 500
+    nb_t_total = 500
     X_r_f_total = torch.linspace(0, R_item, nb_r_total).view(-1, 1)
     X_t_f_total = torch.linspace(0, def_t, nb_t_total).view(-1, 1)
     grid_r_f, grid_t_f = torch.meshgrid(X_r_f_total.squeeze(), X_t_f_total.squeeze(), indexing="ij")
     X_fick_total = torch.stack([grid_r_f.flatten(), grid_t_f.flatten()], dim=1)
+    
     X_R_data_total = torch.full((nb_t_total, 1), R_item)
     X_t_data_total = torch.linspace(0, def_t, nb_t_total).view(-1, 1)
     X_boundary_total = torch.cat([X_R_data_total, X_t_data_total], dim=1)
+    
     X_r_ini_total = torch.linspace(0, R_item, nb_t_total).view(-1, 1)
     X_t_ini_total = torch.zeros((nb_t_total, 1))
     X_ini_total = torch.cat([X_r_ini_total, X_t_ini_total], dim=1)
     X_data_total = torch.cat([X_boundary_total, X_ini_total], dim=0)
+
     print(f"DataSet créé: {X_fick_total.shape[0]} points de physique, {X_data_total.shape[0]} points de données.")
-    loss = [[] for _ in range(5)]; 
-    if var_R: loss.append([])
-    model_opti = copy.deepcopy(model); min_loss_val = float('inf')
+
+    loss = [[] for _ in range(5)]
+    if var_R:
+        loss.append([])
+
+    model_opti = copy.deepcopy(model)
+    min_loss_val = float('inf')
+
+    # --- PHASE 1: ADAM AVEC MINI-BATCHS ---
     print("\n--- Phase 1: Adam Optimizer avec Mini-Batching ---")
     optimizer = optim.Adam(model.parameters(), lr=params_pinns['lr'])
+    
     epochs_phase1 = 9000
     for it in tqdm(range(epochs_phase1), desc="Phase 1 (Adam)"):
         fick_indices = torch.randint(0, X_fick_total.shape[0], (batch_size // 2,))
         data_indices = torch.randint(0, X_data_total.shape[0], (batch_size // 2,))
-        X_fick_batch = X_fick_total[fick_indices]; X_data_batch = X_data_total[data_indices]
+        X_fick_batch = X_fick_total[fick_indices]
+        X_data_batch = X_data_total[data_indices]
+        
         optimizer.zero_grad()
         L, L_total_list = cost_original_batch(model, F_f, S_f, S_j, X_fick_batch, X_data_batch)
-        L.backward(); optimizer.step()
+        L.backward()
+        optimizer.step()
+        
         if it % 10 == 0:
-            for i in range(len(L_total_list)): loss[i].append(L_total_list[i])
-            if var_R: loss[-1].append(model.R.item())
-            if L_total_list[0] < min_loss_val: min_loss_val = L_total_list[0]; model_opti = copy.deepcopy(model)
+            for i in range(len(L_total_list)):
+                loss[i].append(L_total_list[i])
+            if var_R:
+                loss[-1].append(model.R.item())
+            
+            if L_total_list[0] < min_loss_val:
+                min_loss_val = L_total_list[0]
+                model_opti = copy.deepcopy(model)
+
+    # --- PHASE 2: L-BFGS AVEC FULL-BATCH ---
     print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch ---")
     optimizer = optim.LBFGS(model.parameters(), lr=1.0, max_iter=10, max_eval=20, tolerance_grad=1e-7, tolerance_change=1e-9, history_size=150, line_search_fn="strong_wolfe")
+
     epochs_phase2 = 100
     for it in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)"):
         def closure():
             optimizer.zero_grad()
             L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
             L.backward()
+            
             nonlocal min_loss_val, model_opti
-            if L_total_list[0] < min_loss_val: min_loss_val = L_total_list[0]; model_opti = copy.deepcopy(model)
+            if L_total_list[0] < min_loss_val:
+                min_loss_val = L_total_list[0]
+                model_opti = copy.deepcopy(model)
+            
             if it % 10 == 0:
-                for i in range(len(L_total_list)): loss[i].append(L_total_list[i])
-                if var_R: loss[-1].append(model.R.item())
+                for i in range(len(L_total_list)):
+                    loss[i].append(L_total_list[i])
+                if var_R:
+                    loss[-1].append(model.R.item())
             return L
+        
         optimizer.step(closure)
+
     print(f"\nEntraînement terminé. Meilleure perte (sum): {min_loss_val:.2e}")
     return model_opti, loss
 
 # ==============================================================================
-# SECTION 3: SAUVEGARDE ET VISUALISATION (AUCUN CHANGEMENT ICI)
+# SECTION 3: SAUVEGARDE ET VISUALISATION
 # ==============================================================================
 def save_results(model, loss_history, params_pinns, params, path):
     file_path = path / "Data"
     torch.save(model.state_dict(), file_path / "model.pth")
-    with open(file_path / "loss.json", "w") as f: json.dump(loss_history, f)
-    with open(file_path / "params.json", "w") as f: json.dump(params, f, indent=4)
-    with open(file_path / "params_PINNS.json", "w") as f: json.dump(params_pinns, f, indent=4)
+    with open(file_path / "loss.json", "w") as f:
+        json.dump(loss_history, f)
+    with open(file_path / "params.json", "w") as f:
+        json.dump(params, f, indent=4)
+    with open(file_path / "params_PINNS.json", "w") as f:
+        json.dump(params_pinns, f, indent=4)
     print(f"Résultats sauvegardés dans {file_path}")
 
 def affichage(path: Path):
     print(f"Génération des graphiques pour les résultats dans : {path}")
-    data_dir = path / "Data"; graph_dir = path / "Graphiques"
+    data_dir = path / "Data"
+    graph_dir = path / "Graphiques"
     with open(data_dir / "loss.json", "r") as f: loss = json.load(f)
     with open(data_dir / "params.json", "r") as f: params = json.load(f)
     with open(data_dir / "params_PINNS.json", "r") as f: params_pinns = json.load(f)
@@ -242,37 +331,65 @@ def affichage(path: Path):
     with open(data_dir / "S_j.pkl", "rb") as f: S_j = pickle.load(f)
     rayon_initial_m = params["rayon_initialisation"]
     R_norm, _, ordre_R = normalisation(rayon_initial_m, params["D_f"])
-    model = Physics_informed_nn(nb_layer=params_pinns["nb_hidden_layer"], hidden_layer=params_pinns["nb_hidden_perceptron"], rayon_ini=R_norm, coeff_normal=coeff_normal, var_R=params_pinns["var_R"])
-    model.load_state_dict(torch.load(data_dir / "model.pth")); model.eval()
+    model = Physics_informed_nn(
+        nb_layer=params_pinns["nb_hidden_layer"],
+        hidden_layer=params_pinns["nb_hidden_perceptron"],
+        rayon_ini=R_norm, 
+        coeff_normal=coeff_normal,
+        var_R=params_pinns["var_R"]
+    )
+    model.load_state_dict(torch.load(data_dir / "model.pth"))
+    model.eval()
     if params_pinns["var_R"]: R_final_norm = loss[-1][-1]
     else: R_final_norm = model.R.item()
     R_final_m = R_final_norm * (10**ordre_R)
+    
     fig, ax1 = plt.subplots(1, 1, figsize=(20, 8))
     loss_names = ["Total Sum", "L_solid", "L_boundary", "L_initial", "L_fick"]
-    for i, name in enumerate(loss_names): ax1.plot(loss[i], label=name)
-    ax1.set_yscale('log'); ax1.set_title('Evolution de la fonction de coût et de ses termes'); ax1.set_xlabel('Itérations (x10)'); ax1.set_ylabel('Coût (log)'); ax1.legend(); ax1.grid(True)
+    for i, name in enumerate(loss_names):
+        ax1.plot(loss[i], label=name)
+    ax1.set_yscale('log')
+    ax1.set_title('Evolution de la fonction de coût et de ses termes')
+    ax1.set_xlabel('Itérations (x10)')
+    ax1.set_ylabel('Coût (log)')
+    ax1.legend(); ax1.grid(True)
     fig.tight_layout(); fig.savefig(graph_dir / "loss_evolution.png"); plt.close(fig)
+    
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
     t_plot = torch.linspace(0, params["def_t"], 200).view(-1, 1)
-    X_solid_boundary = torch.cat([torch.tensor(R_final_norm).repeat(t_plot.shape[0], 1), t_plot], dim=1); X_solid_boundary.requires_grad_(True)
-    G_pred_norm = model(X_solid_boundary); P_pred_norm = P_from_G(G_pred_norm, X_solid_boundary)
-    G_pred_denorm = G_pred_norm * coeff_normal; P_pred_denorm = P_pred_norm * coeff_normal
-    ax1.plot(t_plot.numpy(), S_f(t_plot).numpy() * coeff_normal, 'k--', label='S_f (données fittées)'); ax1.plot(S_f.times, S_f.list_y_raw, 'ro', label='S_f (données brutes)'); ax1.plot(t_plot.numpy(), G_pred_denorm.detach().numpy(), 'b-', label='Prédiction modèle G(R,t)')
+    X_solid_boundary = torch.cat([torch.tensor(R_final_norm).repeat(t_plot.shape[0], 1), t_plot], dim=1)
+    X_solid_boundary.requires_grad_(True)
+    G_pred_norm = model(X_solid_boundary)
+    P_pred_norm = P_from_G(G_pred_norm, X_solid_boundary)
+    G_pred_denorm = G_pred_norm * coeff_normal
+    P_pred_denorm = P_pred_norm * coeff_normal
+    ax1.plot(t_plot.numpy(), S_f(t_plot).numpy() * coeff_normal, 'k--', label='S_f (données fittées)')
+    ax1.plot(S_f.times, S_f.list_y_raw, 'ro', label='S_f (données brutes)')
+    ax1.plot(t_plot.numpy(), G_pred_denorm.detach().numpy(), 'b-', label='Prédiction modèle G(R,t)')
     ax1.set_title('Polarisation moyenne du solide'); ax1.set_xlabel('Temps (s)'); ax1.set_ylabel('Polarisation'); ax1.legend(); ax1.grid(True)
-    ax2.plot(t_plot.numpy(), S_j(t_plot).numpy() * coeff_normal, 'k--', label='S_j (données fittées)'); ax2.plot(S_j.times, S_j.list_y_raw, 'ro', label='S_j (données brutes)'); ax2.plot(t_plot.numpy(), P_pred_denorm.detach().numpy(), 'b-', label='Prédiction modèle P(R,t)')
+    ax2.plot(t_plot.numpy(), S_j(t_plot).numpy() * coeff_normal, 'k--', label='S_j (données fittées)')
+    ax2.plot(S_j.times, S_j.list_y_raw, 'ro', label='S_j (données brutes)')
+    ax2.plot(t_plot.numpy(), P_pred_denorm.detach().numpy(), 'b-', label='Prédiction modèle P(R,t)')
     ax2.set_title('Polarisation moyenne du solvant (bord)'); ax2.set_xlabel('Temps (s)'); ax2.legend(); ax2.grid(True)
     fig.tight_layout(); fig.savefig(graph_dir / "mean_polarization_fit.png"); plt.close(fig)
-    r_range = torch.linspace(0, R_final_m, 100); t_range = torch.linspace(0, params["def_t"], 100)
+    
+    r_range = torch.linspace(0, R_final_m, 100)
+    t_range = torch.linspace(0, params["def_t"], 100)
     grid_r, grid_t = torch.meshgrid(r_range, t_range, indexing='ij')
     grid_r_norm = grid_r / (10**ordre_R)
-    X_grid = torch.stack([grid_r_norm.flatten(), grid_t.flatten()], dim=1); X_grid.requires_grad_(True)
-    G_grid_norm = model(X_grid); P_grid_norm = P_from_G(G_grid_norm, X_grid); P_grid_denorm = P_grid_norm * coeff_normal
+    X_grid = torch.stack([grid_r_norm.flatten(), grid_t.flatten()], dim=1)
+    X_grid.requires_grad_(True)
+    G_grid_norm = model(X_grid)
+    P_grid_norm = P_from_G(G_grid_norm, X_grid)
+    P_grid_denorm = P_grid_norm * coeff_normal
     P_colormap = P_grid_denorm.detach().numpy().reshape(grid_r.shape)
-    np.save(data_dir / "P.npy", P_colormap); np.save(data_dir / "(r, t).npy", (grid_r.numpy(), grid_t.numpy()))
+    np.save(data_dir / "P.npy", P_colormap)
+    np.save(data_dir / "(r, t).npy", (grid_r.numpy(), grid_t.numpy()))
     plt.figure(figsize=(10, 8))
     plt.contourf(grid_r.numpy() * 1e9, grid_t.numpy(), P_colormap, 50, cmap='jet')
     cbar = plt.colorbar(); cbar.set_label('Polarisation P(r,t)')
-    plt.xlabel('Rayon r (nm)'); plt.ylabel('Temps t (s)'); plt.title(f"Polarisation ponctuelle prédite - R final = {R_final_m * 1e9:.1f} nm")
+    plt.xlabel('Rayon r (nm)'); plt.ylabel('Temps t (s)')
+    plt.title(f"Polarisation ponctuelle prédite - R final = {R_final_m * 1e9:.1f} nm")
     plt.savefig(graph_dir / "P_r_t_colormap.png"); plt.close()
 
 # ==============================================================================
@@ -280,34 +397,25 @@ def affichage(path: Path):
 # ==============================================================================
 
 if __name__ == "__main__":
-    ### MODIFIÉ ###: Mise en place du parser d'arguments
-    parser = argparse.ArgumentParser(description="Lancement d'une simulation PINN pour un cas spécifique.")
-    parser.add_argument('--data_file', type=str, required=True, help="Chemin vers le fichier de données principal (donnees.pkl)")
-    parser.add_argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine où les résultats seront sauvegardés.")
-    parser.add_argument('--case_name', type=str, required=True, help="Nom du cas expérimental à traiter (ex: 11_58_40_25)")
-    args = parser.parse_args()
-
-    # --- CONFIGURATION (gardée pour les paramètres du PINN) ---
+    # --- CONFIGURATION ---
+    EXP_NAME_TO_RUN = "11_58_40_25" 
     CASE = "On"
     params_pinns = {
-        "nb_hidden_layer": 2, "nb_hidden_perceptron": 32,
-        "lr": 0.001, "lr_R": 0.0005,
-        "epoch": 5000, "var_R": False,
+        "nb_hidden_layer": 2,
+        "nb_hidden_perceptron": 32,
+        "lr": 0.001,
+        "lr_R": 0.0005,
+        "epoch": 5000,
+        "var_R": False,
         "batch_size": 100,
     }
 
-    ### MODIFIÉ ###: Utilisation des arguments pour définir les chemins
-    # Les chemins sont maintenant flexibles et donnés par l'utilisateur
-    EXP_NAME_TO_RUN = args.case_name
-    data_file = Path(args.data_file)
-    base_output = Path(args.output_dir)
+    # --- CHEMINS ---
+    code_dir = Path(__file__).resolve().parents[2]
+    data_file = code_dir / "data_1" / "donnees.pkl"
+    base_output = code_dir / "output" / "runs_adam_lbfgs_"
 
-    # Le reste de la logique est inchangé, elle utilise les variables définies ci-dessus
     # --- CHARGEMENT ET PRÉPARATION ---
-    print(f"Chargement des données depuis : {data_file}")
-    print(f"Cas à traiter : {EXP_NAME_TO_RUN}")
-    print(f"Les résultats seront sauvegardés dans : {base_output}")
-
     with open(data_file, "rb") as f: all_data = pickle.load(f)
     exp_data = all_data[EXP_NAME_TO_RUN]
     solid_data_key, solvent_data_key = "Cris" + CASE, "Juice" + CASE
