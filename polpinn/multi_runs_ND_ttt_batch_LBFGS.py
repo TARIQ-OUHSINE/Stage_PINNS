@@ -3,6 +3,7 @@
 #               Adapté pour le format de données .pkl
 # ==============================================================================
 
+import sys
 import json
 import shutil
 import torch
@@ -191,7 +192,7 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
     print("\n--- Phase 1: Adam Optimizer avec Mini-Batching ---")
     optimizer = optim.Adam(model.parameters(), lr=params_pinns['lr'])
     epochs_phase1 = 9000
-    for it in tqdm(range(epochs_phase1), desc="Phase 1 (Adam)"):
+    for it in tqdm(range(epochs_phase1), desc="Phase 1 (Adam)", file=sys.stdout):
         fick_indices = torch.randint(0, X_fick_total.shape[0], (batch_size // 2,))
         data_indices = torch.randint(0, X_data_total.shape[0], (batch_size // 2,))
         X_fick_batch = X_fick_total[fick_indices]; X_data_batch = X_data_total[data_indices]
@@ -205,7 +206,7 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
     print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch ---")
     optimizer = optim.LBFGS(model.parameters(), lr=1.0, max_iter=10, max_eval=20, tolerance_grad=1e-7, tolerance_change=1e-9, history_size=150, line_search_fn="strong_wolfe")
     epochs_phase2 = 100
-    for it in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)"):
+    for it in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)", file=sys.stdout):
         def closure():
             optimizer.zero_grad()
             L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
