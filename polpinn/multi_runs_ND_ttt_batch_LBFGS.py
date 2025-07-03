@@ -163,7 +163,7 @@ def cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total):
     return total_loss, loss_components
 
 def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
-    # === PHASE DE SETUP (inchangée) ===
+    # === PHASE DE SETUP ===
     torch.manual_seed(1234)
     var_R = params_pinns["var_R"]
     rayon_ini_norm, D_f_norm, ordre_R = normalisation(params["rayon_initialisation"], params["D_f"])
@@ -179,7 +179,7 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
     def_t = params["def_t"]; R_item = rayon_ini_norm
     
     # 1. Réduction du nombre de points
-    nb_r_total = 100  # sqrt(10000)
+    nb_r_total = 100
     nb_t_total = 100  # sqrt(10000)
     
     # 2. Réduction du nombre de points de données
@@ -189,13 +189,13 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
     X_r_f_total = torch.linspace(0, R_item, nb_r_total).view(-1, 1)
     X_t_f_total = torch.linspace(0, def_t, nb_t_total).view(-1, 1)
     grid_r_f, grid_t_f = torch.meshgrid(X_r_f_total.squeeze(), X_t_f_total.squeeze(), indexing="ij")
-    X_fick_total = torch.stack([grid_r_f.flatten(), grid_t_f.flatten()], dim=1) # Total = 10000 points
+    X_fick_total = torch.stack([grid_r_f.flatten(), grid_t_f.flatten()], dim=1)   # Total = 10000 points
     
     X_R_data_total = torch.full((nb_t_data, 1), R_item); X_t_data_total = torch.linspace(0, def_t, nb_t_data).view(-1, 1)
     X_boundary_total = torch.cat([X_R_data_total, X_t_data_total], dim=1)
     X_r_ini_total = torch.linspace(0, R_item, nb_t_data).view(-1, 1); X_t_ini_total = torch.zeros((nb_t_data, 1))
     X_ini_total = torch.cat([X_r_ini_total, X_t_ini_total], dim=1)
-    X_data_total = torch.cat([X_boundary_total, X_ini_total], dim=0) # Total = 200 points
+    X_data_total = torch.cat([X_boundary_total, X_ini_total], dim=0)   # Total = 200 points
     
     print(f"DataSet créé: {X_fick_total.shape[0]} points de physique, {X_data_total.shape[0]} points de données.")
 
@@ -207,11 +207,11 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
     # --- PHASE 1: ADAM - NOUVELLE LOGIQUE DE MINI-BATCHING COMPLET ---
     print("\n--- Phase 1: Adam Optimizer (Mini-Batching Complet) ---")
     optimizer = optim.Adam(model.parameters(), lr=params_pinns['lr'])
-    epochs_phase1 = 10 # 10 époques pour le test
+    epochs_phase1 = 10 # 10 époques
     
     # 3. Définition des tailles de batch
     fick_batch_size = 1000
-    data_batch_size = 100 # J'ai mis 100 au lieu de 10 car 10 est très petit et vous avez 200 points de données.
+    data_batch_size = 10
     
     # Création des DataLoaders pour gérer les batchs facilement
     fick_dataset = torch.utils.data.TensorDataset(X_fick_total)
