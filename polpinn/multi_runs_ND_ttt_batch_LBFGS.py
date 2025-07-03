@@ -163,14 +163,26 @@ def cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total):
     return total_loss, loss_components
 
 def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
+    # === MODIFIÉ POUR UN ENTRAÎNEMENT EN 2 PHASES (Adam -> L-BFGS) ===
     torch.manual_seed(1234)
     var_R = params_pinns["var_R"]
     batch_size = params_pinns["batch_size"]
+    
     rayon_ini_norm, D_f_norm, ordre_R = normalisation(params["rayon_initialisation"], params["D_f"])
     params["ordre_R"] = ordre_R
-    model = Physics_informed_nn(nb_layer=params_pinns["nb_hidden_layer"], hidden_layer=params_pinns["nb_hidden_perceptron"], rayon_ini=rayon_ini_norm, coeff_normal=params["P0_j"], var_R=var_R)
+
+    model = Physics_informed_nn(
+        nb_layer=params_pinns["nb_hidden_layer"],
+        hidden_layer=params_pinns["nb_hidden_perceptron"],
+        rayon_ini=rayon_ini_norm,
+        coeff_normal=params["P0_j"],
+        var_R=var_R,
+    )
+    
     P0_f_norm = params["P0_f"] / params["P0_j"]
     F_f = Fick(D_f_norm, params["T_1"], P0_f_norm)
+    
+    # --- Création du DataSet complet (inchangé) ---
     print("Création du DataSet de points de collocation...")
     def_t = params["def_t"]; R_item = rayon_ini_norm
     nb_r_total, nb_t_total = 500, 500
@@ -178,17 +190,20 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
     X_t_f_total = torch.linspace(0, def_t, nb_t_total).view(-1, 1)
     grid_r_f, grid_t_f = torch.meshgrid(X_r_f_total.squeeze(), X_t_f_total.squeeze(), indexing="ij")
     X_fick_total = torch.stack([grid_r_f.flatten(), grid_t_f.flatten()], dim=1)
-    X_R_data_total = torch.full((nb_t_total, 1), R_item)
-    X_t_data_total = torch.linspace(0, def_t, nb_t_total).view(-1, 1)
+    X_R_data_total = torch.full((nb_t_total, 1), R_item); X_t_data_total = torch.linspace(0, def_t, nb_t_total).view(-1, 1)
     X_boundary_total = torch.cat([X_R_data_total, X_t_data_total], dim=1)
-    X_r_ini_total = torch.linspace(0, R_item, nb_t_total).view(-1, 1)
-    X_t_ini_total = torch.zeros((nb_t_total, 1))
+    X_r_ini_total = torch.linspace(0, R_item, nb_t_total).view(-1, 1); X_t_ini_total = torch.zeros((nb_t_total, 1))
     X_ini_total = torch.cat([X_r_ini_total, X_t_ini_total], dim=1)
     X_data_total = torch.cat([X_boundary_total, X_ini_total], dim=0)
     print(f"DataSet créé: {X_fick_total.shape[0]} points de physique, {X_data_total.shape[0]} points de données.")
-    loss = [[] for _ in range(5)]; 
+
+    loss = [[] for _ in range(5)]
     if var_R: loss.append([])
-    model_opti = copy.deepcopy(model); min_loss_val = float('inf')
+
+    model_opti = copy.deepcopy(model)
+    min_loss_val = float('inf')
+
+    # --- PHASE 1: ADAM AVEC MINI-BATCHS (inchangé) ---
     print("\n--- Phase 1: Adam Optimizer avec Mini-Batching ---")
     optimizer = optim.Adam(model.parameters(), lr=params_pinns['lr'])
     epochs_phase1 = 9000
@@ -203,22 +218,56 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
             for i in range(len(L_total_list)): loss[i].append(L_total_list[i])
             if var_R: loss[-1].append(model.R.item())
             if L_total_list[0] < min_loss_val: min_loss_val = L_total_list[0]; model_opti = copy.deepcopy(model)
+
+    ### CORRECTION CRUCIALE : On repart du MEILLEUR modèle trouvé par Adam ###
+    print(f"\nFin de la phase Adam. Meilleure perte trouvée : {min_loss_val:.2e}")
+    print("Chargement du meilleur modèle pour L-BFGS...")
+    model.load_state_dict(model_opti.state_dict())
+    
+    # --- PHASE 2: L-BFGS AVEC FULL-BATCH (NOUVELLE CONFIGURATION) ---
     print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch ---")
-    optimizer = optim.LBFGS(model.parameters(), lr=1.0, max_iter=10, max_eval=20, tolerance_grad=1e-7, tolerance_change=1e-9, history_size=150, line_search_fn="strong_wolfe")
-    epochs_phase2 = 500
-    for it in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)", file=sys.stdout):
-        def closure():
-            optimizer.zero_grad()
-            L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
-            L.backward()
-            nonlocal min_loss_val, model_opti
-            if L_total_list[0] < min_loss_val: min_loss_val = L_total_list[0]; model_opti = copy.deepcopy(model)
-            if it % 10 == 0:
-                for i in range(len(L_total_list)): loss[i].append(L_total_list[i])
-                if var_R: loss[-1].append(model.R.item())
-            return L
-        optimizer.step(closure)
-    print(f"\nEntraînement terminé. Meilleure perte (sum): {min_loss_val:.2e}")
+    
+    # Nouvelle configuration de l'optimiseur :
+    # - lr plus faible pour éviter le "saut de géant"
+    # - max_iter beaucoup plus grand pour lui donner le temps de converger en une seule fois
+    optimizer = optim.LBFGS(
+        model.parameters(), 
+        lr=0.1, 
+        max_iter=500,  # Fait 500 itérations dans UN SEUL appel à step()
+        max_eval=500*1.25,
+        tolerance_grad=1e-7, 
+        tolerance_change=1e-9, 
+        history_size=100,
+        line_search_fn="strong_wolfe"
+    )
+
+    # On définit une liste temporaire pour les logs de cette phase
+    lbfgs_loss_log = []
+
+    def closure():
+        optimizer.zero_grad()
+        L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
+        L.backward()
+        
+        # On logue les pertes à chaque itération de L-BFGS
+        lbfgs_loss_log.append(L_total_list)
+        return L
+    
+    # On lance l'optimisation L-BFGS en UNE SEULE FOIS
+    optimizer.step(closure)
+    
+    # On met à jour le modèle optimal et la perte minimale après la passe L-BFGS
+    final_loss_lbfgs = lbfgs_loss_log[-1][0]
+    if final_loss_lbfgs < min_loss_val:
+        min_loss_val = final_loss_lbfgs
+        model_opti = copy.deepcopy(model)
+
+    # On ajoute les logs de la phase L-BFGS à l'historique principal
+    for log_step in lbfgs_loss_log:
+        for i in range(len(log_step)): loss[i].append(log_step[i])
+        if var_R: loss[-1].append(model.R.item())
+
+    print(f"\nEntraînement terminé. Meilleure perte finale (sum): {min_loss_val:.2e}")
     return model_opti, loss
 
 # ==============================================================================
