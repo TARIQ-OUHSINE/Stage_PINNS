@@ -163,7 +163,7 @@ def cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total):
     return total_loss, loss_components
 
 def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
-    # === MODIFIÉ POUR UN ENTRAÎNEMENT EN 2 PHASES (Adam -> L-BFGS) ===
+    # === PHASE DE SETUP ===
     torch.manual_seed(1234)
     var_R = params_pinns["var_R"]
     batch_size = params_pinns["batch_size"]
@@ -182,7 +182,6 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
     P0_f_norm = params["P0_f"] / params["P0_j"]
     F_f = Fick(D_f_norm, params["T_1"], P0_f_norm)
     
-    # --- Création du DataSet complet (inchangé) ---
     print("Création du DataSet de points de collocation...")
     def_t = params["def_t"]; R_item = rayon_ini_norm
     nb_r_total, nb_t_total = 500, 500
@@ -199,11 +198,10 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
 
     loss = [[] for _ in range(5)]
     if var_R: loss.append([])
-
     model_opti = copy.deepcopy(model)
     min_loss_val = float('inf')
 
-    # --- PHASE 1: ADAM AVEC MINI-BATCHS (inchangé) ---
+    # --- PHASE 1: ADAM AVEC MINI-BATCHS ---
     print("\n--- Phase 1: Adam Optimizer avec Mini-Batching ---")
     optimizer = optim.Adam(model.parameters(), lr=params_pinns['lr'])
     epochs_phase1 = 9000
@@ -219,53 +217,60 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
             if var_R: loss[-1].append(model.R.item())
             if L_total_list[0] < min_loss_val: min_loss_val = L_total_list[0]; model_opti = copy.deepcopy(model)
 
-    ### CORRECTION CRUCIALE : On repart du MEILLEUR modèle trouvé par Adam ###
+    ### On repart du MEILLEUR modèle trouvé par Adam ###
     print(f"\nFin de la phase Adam. Meilleure perte trouvée : {min_loss_val:.2e}")
     print("Chargement du meilleur modèle pour L-BFGS...")
     model.load_state_dict(model_opti.state_dict())
     
-    # --- PHASE 2: L-BFGS AVEC FULL-BATCH (NOUVELLE CONFIGURATION) ---
-    print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch ---")
+    # ==============================================================================
+    # --- PHASE 2: L-BFGS AVEC FULL-BATCH (NOUVELLE STRUCTURE)
+    # ==============================================================================
+    print("\n--- Phase 2: L-BFGS Optimizer (Nouvelle structure) ---")
     
-    # Nouvelle configuration de l'optimiseur :
-    # - lr plus faible pour éviter le "saut de géant"
-    # - max_iter beaucoup plus grand pour lui donner le temps de converger en une seule fois
-    optimizer = optim.LBFGS(
+    optimizer_lbfgs = optim.LBFGS(
         model.parameters(), 
-        lr=0.1, 
-        max_iter=500,  # Fait 500 itérations dans UN SEUL appel à step()
-        max_eval=500*1.25,
+        lr=1.0,  # Le standard pour L-BFGS, car le line_search ajuste la taille du pas.
+        max_iter=20,  # Nombre d'itérations par époque (standard)
+        max_eval=None,
         tolerance_grad=1e-7, 
         tolerance_change=1e-9, 
         history_size=100,
         line_search_fn="strong_wolfe"
     )
 
-    # On définit une liste temporaire pour les logs de cette phase
-    lbfgs_loss_log = []
+    # Dictionnaire pour garder les dernières métriques
+    last_closure_metrics = {}
+    epochs_phase2 = 100 # Nombre d'époques pour la phase L-BFGS
 
-    def closure():
-        optimizer.zero_grad()
-        L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
-        L.backward()
+    for epoch in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)", file=sys.stdout):
+        def closure():
+            optimizer_lbfgs.zero_grad()
+            L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
+            L.backward()
+            
+            # On stocke les métriques de cette évaluation pour le logging
+            nonlocal last_closure_metrics
+            last_closure_metrics['components'] = L_total_list
+            if var_R:
+                last_closure_metrics['R'] = model.R.item()
+            return L
         
-        # On logue les pertes à chaque itération de L-BFGS
-        lbfgs_loss_log.append(L_total_list)
-        return L
-    
-    # On lance l'optimisation L-BFGS en UNE SEULE FOIS
-    optimizer.step(closure)
-    
-    # On met à jour le modèle optimal et la perte minimale après la passe L-BFGS
-    final_loss_lbfgs = lbfgs_loss_log[-1][0]
-    if final_loss_lbfgs < min_loss_val:
-        min_loss_val = final_loss_lbfgs
-        model_opti = copy.deepcopy(model)
-
-    # On ajoute les logs de la phase L-BFGS à l'historique principal
-    for log_step in lbfgs_loss_log:
-        for i in range(len(log_step)): loss[i].append(log_step[i])
-        if var_R: loss[-1].append(model.R.item())
+        # L'optimiseur exécute la closure plusieurs fois pour trouver le bon pas
+        optimizer_lbfgs.step(closure)
+        
+        # --- Logging après chaque époque (chaque appel à step) ---
+        # On récupère les métriques de la dernière évaluation réussie de la closure
+        final_epoch_components = last_closure_metrics.get('components', [0]*5)
+        for i in range(len(final_epoch_components)):
+            loss[i].append(final_epoch_components[i])
+        if var_R:
+            loss[-1].append(last_closure_metrics.get('R', model.R.item()))
+            
+        # Mise à jour du meilleur modèle
+        current_loss = final_epoch_components[0]
+        if current_loss < min_loss_val:
+            min_loss_val = current_loss
+            model_opti = copy.deepcopy(model)
 
     print(f"\nEntraînement terminé. Meilleure perte finale (sum): {min_loss_val:.2e}")
     return model_opti, loss
