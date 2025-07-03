@@ -205,7 +205,7 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
             if L_total_list[0] < min_loss_val: min_loss_val = L_total_list[0]; model_opti = copy.deepcopy(model)
     print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch ---")
     optimizer = optim.LBFGS(model.parameters(), lr=1.0, max_iter=10, max_eval=20, tolerance_grad=1e-7, tolerance_change=1e-9, history_size=150, line_search_fn="strong_wolfe")
-    epochs_phase2 = 100
+    epochs_phase2 = 500
     for it in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)", file=sys.stdout):
         def closure():
             optimizer.zero_grad()
