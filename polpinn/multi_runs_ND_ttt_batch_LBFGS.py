@@ -164,6 +164,8 @@ def cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total):
 
 # REMPLACEZ VOTRE ANCIENNE FONCTION PAR CELLE-CI
 
+# REMPLACEZ VOTRE ANCIENNE FONCTION PAR CELLE-CI
+
 def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
     # === SETUP INITIAL (inchangé) ===
     torch.manual_seed(1234)
@@ -195,103 +197,86 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
 
     loss = [[] for _ in range(5)]
     if var_R: loss.append([])
-    model_opti = copy.deepcopy(model)
-    min_loss_val = float('inf')
 
-    # --- PHASE 1: ADAM - AVEC ÉVALUATION FULL-BATCH ET COOLDOWN ---
-    print("\n--- Phase 1: Adam Optimizer (avec validation Full-Batch) ---")
-    optimizer = optim.Adam(model.parameters(), lr=params_pinns['lr'])
+    # ==============================================================================
+    #           PHASE 1: ADAM TRAINING (Inspiré de l'exemple)
+    # ==============================================================================
+    print("\n--- Phase 1: Adam Optimizer avec Mini-Batching ---")
+    optimizer_adam = optim.Adam(model.parameters(), lr=params_pinns['lr'])
     
-    # NOUVEAU: Scheduler pour réduire le learning rate
-    # Divise le LR par 10 après 6000 et 8000 époques.
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[6000, 8000], gamma=0.1)
+    # Récupération des poids (stratégie la plus importante à conserver)
+    weights = params_pinns.get("weights", {"solid": 1.0, "boundary": 1.0, "initial": 1.0, "fick": 1.0})
+    print(f"Utilisation des poids de perte : {weights}")
 
-    epochs_phase1 = 9000
+    epochs_phase1 = params_pinns.get("epoch", 9000) # Nombre d'époques Adam
     for it in tqdm(range(epochs_phase1), desc="Phase 1 (Adam)", file=sys.stdout):
-        # Entraînement sur mini-batch (inchangé)
+        # Entraînement sur mini-batch
         fick_indices = torch.randint(0, X_fick_total.shape[0], (batch_size // 2,))
         data_indices = torch.randint(0, X_data_total.shape[0], (batch_size // 2,))
         X_fick_batch = X_fick_total[fick_indices]
         X_data_batch = X_data_total[data_indices]
-        optimizer.zero_grad()
-        L, L_total_list_batch = cost_original_batch(model, F_f, S_f, S_j, X_fick_batch, X_data_batch)
+        
+        optimizer_adam.zero_grad()
+        # On utilise la fonction de coût sur les mini-batchs
+        L, L_total_list_batch = cost_original_batch(model, F_f, S_f, S_j, X_fick_batch, X_data_batch, weights)
         L.backward()
-        optimizer.step()
-        scheduler.step() # Appeler le scheduler à chaque itération
-
-        # Évaluation sur le FULL-BATCH toutes les 100 itérations
+        optimizer_adam.step()
+        
+        # Logging simple toutes les 100 itérations
         if it % 100 == 0:
-            # On met le modèle en mode évaluation (désactive le dropout, etc.)
-            # C'est une bonne pratique à conserver.
-            model.eval() 
-
-            # On appelle la fonction de coût normalement pour qu'elle puisse
-            # calculer les dérivées nécessaires pour L_fick.
-            _, L_total_list_full = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
-            
-            # On remet le modèle en mode entraînement pour la suite
-            model.train()
-
-            # Le logging pour le graphique se base sur la perte du full-batch (plus stable)
-            for i in range(len(L_total_list_full)):
-                loss[i].append(L_total_list_full[i])
+            # On log les composantes de la perte du dernier mini-batch
+            for i in range(len(L_total_list_batch)):
+                loss[i].append(L_total_list_batch[i])
             if var_R:
                 loss[-1].append(model.R.item())
 
-            # La décision de sauvegarder le meilleur modèle se base sur la perte du full-batch
-            current_full_loss = L_total_list_full[0]
-            if current_full_loss < min_loss_val:
-                min_loss_val = current_full_loss
-                model_opti = copy.deepcopy(model)
-                # On affiche quand on trouve un meilleur modèle "réel"
-                tqdm.write(f"  [Iter {it}] Nouveau meilleur modèle ! Perte Full-Batch: {min_loss_val:.2e}")
-            
-            # Le logging pour le graphique se base sur la perte du full-batch (plus stable)
-            for i in range(len(L_total_list_full)):
-                loss[i].append(L_total_list_full[i])
-            if var_R:
-                loss[-1].append(model.R.item())
+    # À la fin de la phase Adam, le modèle est prêt pour L-BFGS. Pas besoin de chercher le "meilleur" modèle.
+    # L'état final d'Adam est le point de départ pour L-BFGS.
+    print(f"\nFin de la phase Adam. Perte finale (batch): {L.item():.2e}")
 
-            # La décision de sauvegarder le meilleur modèle se base sur la perte du full-batch
-            current_full_loss = L_total_list_full[0]
-            if current_full_loss < min_loss_val:
-                min_loss_val = current_full_loss
-                model_opti = copy.deepcopy(model)
-                # On affiche quand on trouve un meilleur modèle "réel"
-                tqdm.write(f"  [Iter {it}] Nouveau meilleur modèle ! Perte Full-Batch: {min_loss_val:.2e}")
-
-    # --- TRANSITION ---
-    print(f"\nFin de la phase Adam. Meilleure perte (Full-Batch) trouvée : {min_loss_val:.2e}")
-    print("Chargement du meilleur modèle pour L-BFGS...")
-    model.load_state_dict(model_opti.state_dict())
-    
-    # --- PHASE 2: L-BFGS (inchangée, mais partira maintenant du bon point) ---
+    # ==============================================================================
+    #           PHASE 2: L-BFGS TRAINING (Inspiré de l'exemple)
+    # ==============================================================================
     print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch ---")
+    
     optimizer_lbfgs = optim.LBFGS(
-        model.parameters(), lr=1.0, max_iter=500, history_size=150, line_search_fn="strong_wolfe"
+        model.parameters(), 
+        max_iter=5000,          # Augmenté comme dans l'exemple
+        max_eval=5000,          # Augmenté comme dans l'exemple
+        history_size=150,       # Valeur robuste
+        tolerance_grad=1e-9,    # Critère d'arrêt strict
+        tolerance_change=1.0 * np.finfo(float).eps, # Critère d'arrêt strict
+        line_search_fn="strong_wolfe"
     )
+
     lbfgs_iter = 0
     def closure():
-        nonlocal lbfgs_iter, min_loss_val, model_opti
+        nonlocal lbfgs_iter
+        
         optimizer_lbfgs.zero_grad()
-        L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
+        
+        # La closure utilise TOUJOURS le full-batch
+        L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total, weights)
         L.backward()
-        current_loss_val = L_total_list[0]
+        
+        # Logging à chaque itération de L-BFGS
         if lbfgs_iter % 10 == 0:
-            tqdm.write(f"  [L-BFGS iter {lbfgs_iter:03d}] Loss: {current_loss_val:.2e}")
-            # On continue d'ajouter aux logs pour le graphique
+            tqdm.write(f"  [L-BFGS iter {lbfgs_iter:04d}] Loss: {L.item():.2e}")
+            # On log les composantes pour le graphique
             for i in range(len(L_total_list)): loss[i].append(L_total_list[i])
             if var_R: loss[-1].append(model.R.item())
-        if current_loss_val < min_loss_val:
-            min_loss_val = current_loss_val
-            model_opti = copy.deepcopy(model)
+        
         lbfgs_iter += 1
         return L
 
+    # Appel unique pour lancer toute l'optimisation L-BFGS
     optimizer_lbfgs.step(closure)
-
-    print(f"\nEntraînement terminé. Meilleure perte finale (sum): {min_loss_val:.2e}")
-    return model_opti, loss
+    
+    # Récupération de la perte finale après L-BFGS
+    final_loss, _ = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total, weights)
+    print(f"\nEntraînement terminé. Perte finale (Full-Batch): {final_loss.item():.2e}")
+    
+    return model, loss
 
 # ==============================================================================
 # SECTION 3: SAUVEGARDE ET VISUALISATION (AUCUN CHANGEMENT ICI)
@@ -384,7 +369,7 @@ if __name__ == "__main__":
     with open(data_file, "rb") as f: all_data = pickle.load(f)
     exp_data = all_data[EXP_NAME_TO_RUN]
     solid_data_key, solvent_data_key = "Cris" + CASE, "Juice" + CASE
-    output_path = base_output / f"{EXP_NAME_TO_RUN}_{CASE}_NLBFGS+scheduler"
+    output_path = base_output / f"{EXP_NAME_TO_RUN}_{CASE}_NLBFGS_NavStk"
     if output_path.exists(): shutil.rmtree(output_path)
     (output_path / "Data").mkdir(parents=True, exist_ok=True)
     (output_path / "Graphiques").mkdir(parents=True, exist_ok=True)
