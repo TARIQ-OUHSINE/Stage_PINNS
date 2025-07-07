@@ -256,7 +256,7 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
         optimizer_lbfgs.zero_grad()
         
         # La closure utilise TOUJOURS le full-batch
-        L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total, weights)
+        L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
         L.backward()
         
         # Logging à chaque itération de L-BFGS
