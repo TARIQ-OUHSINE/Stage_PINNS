@@ -218,7 +218,7 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
         
         optimizer_adam.zero_grad()
         # On utilise la fonction de coût sur les mini-batchs
-        L, L_total_list_batch = cost_original_batch(model, F_f, S_f, S_j, X_fick_batch, X_data_batch, weights)
+        L, L_total_list_batch = cost_original_batch(model, F_f, S_f, S_j, X_fick_batch, X_data_batch)
         L.backward()
         optimizer_adam.step()
         
@@ -273,7 +273,7 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
     optimizer_lbfgs.step(closure)
     
     # Récupération de la perte finale après L-BFGS
-    final_loss, _ = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total, weights)
+    final_loss, _ = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
     print(f"\nEntraînement terminé. Perte finale (Full-Batch): {final_loss.item():.2e}")
     
     return model, loss
