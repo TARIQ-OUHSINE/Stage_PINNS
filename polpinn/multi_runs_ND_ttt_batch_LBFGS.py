@@ -157,12 +157,10 @@ def cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total):
     if loss_sum.item() > 1e-12:
         gamma_solide = L_solide / loss_sum; gamma_bord = L_bord / loss_sum
         gamma_ini = L_ini / loss_sum; gamma_fick_f = L_fick_f / loss_sum
-        total_loss = (gamma_solide * L_solide + gamma_bord * L_bord + 10 * gamma_ini * L_ini + gamma_fick_f * L_fick_f)
+        total_loss = (gamma_solide * L_solide + gamma_bord * L_bord + gamma_ini * L_ini + 10 * gamma_fick_f * L_fick_f)
     else: total_loss = loss_sum
     loss_components = [loss_sum.item(), L_solide.item(), L_bord.item(), L_ini.item(), L_fick_f.item()]
     return total_loss, loss_components
-
-# REMPLACEZ VOTRE ANCIENNE FONCTION PAR CELLE-CI
 
 # REMPLACEZ VOTRE ANCIENNE FONCTION PAR CELLE-CI
 
