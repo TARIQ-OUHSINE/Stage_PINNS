@@ -221,11 +221,32 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
         optimizer.step()
         scheduler.step() # Appeler le scheduler à chaque itération
 
-        # NOUVEAU: Évaluation sur le FULL-BATCH toutes les 100 itérations
+        # Évaluation sur le FULL-BATCH toutes les 100 itérations
         if it % 100 == 0:
-            # On met le modèle en mode évaluation (pas de calcul de gradient ici)
-            with torch.no_grad():
-                _, L_total_list_full = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
+            # On met le modèle en mode évaluation (désactive le dropout, etc.)
+            # C'est une bonne pratique à conserver.
+            model.eval() 
+
+            # On appelle la fonction de coût normalement pour qu'elle puisse
+            # calculer les dérivées nécessaires pour L_fick.
+            _, L_total_list_full = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
+            
+            # On remet le modèle en mode entraînement pour la suite
+            model.train()
+
+            # Le logging pour le graphique se base sur la perte du full-batch (plus stable)
+            for i in range(len(L_total_list_full)):
+                loss[i].append(L_total_list_full[i])
+            if var_R:
+                loss[-1].append(model.R.item())
+
+            # La décision de sauvegarder le meilleur modèle se base sur la perte du full-batch
+            current_full_loss = L_total_list_full[0]
+            if current_full_loss < min_loss_val:
+                min_loss_val = current_full_loss
+                model_opti = copy.deepcopy(model)
+                # On affiche quand on trouve un meilleur modèle "réel"
+                tqdm.write(f"  [Iter {it}] Nouveau meilleur modèle ! Perte Full-Batch: {min_loss_val:.2e}")
             
             # Le logging pour le graphique se base sur la perte du full-batch (plus stable)
             for i in range(len(L_total_list_full)):
