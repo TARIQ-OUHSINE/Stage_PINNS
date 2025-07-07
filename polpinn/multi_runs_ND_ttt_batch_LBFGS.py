@@ -162,41 +162,35 @@ def cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total):
     loss_components = [loss_sum.item(), L_solide.item(), L_bord.item(), L_ini.item(), L_fick_f.item()]
     return total_loss, loss_components
 
+# REMPLACEZ VOTRE ANCIENNE FONCTION PAR CELLE-CI
+
 def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
-    # === PHASE DE SETUP (inchangée) ===
+    # === SETUP INITIAL (inchangé) ===
     torch.manual_seed(1234)
     var_R = params_pinns["var_R"]
+    batch_size = params_pinns["batch_size"]
     rayon_ini_norm, D_f_norm, ordre_R = normalisation(params["rayon_initialisation"], params["D_f"])
     params["ordre_R"] = ordre_R
-    model = Physics_informed_nn(nb_layer=params_pinns["nb_hidden_layer"], hidden_layer=params_pinns["nb_hidden_perceptron"], rayon_ini=rayon_ini_norm, coeff_normal=params["P0_j"], var_R=var_R)
+    model = Physics_informed_nn(
+        nb_layer=params_pinns["nb_hidden_layer"], hidden_layer=params_pinns["nb_hidden_perceptron"],
+        rayon_ini=rayon_ini_norm, coeff_normal=params["P0_j"], var_R=var_R,
+    )
     P0_f_norm = params["P0_f"] / params["P0_j"]
     F_f = Fick(D_f_norm, params["T_1"], P0_f_norm)
     
-    # ==============================================================================
-    # --- MODIFICATIONS POUR UN TEST RAPIDE ---
-    # ==============================================================================
-    print("Création du DataSet de points de collocation (VERSION RAPIDE)...")
+    # --- Création du DataSet complet (inchangé) ---
+    print("Création du DataSet de points de collocation...")
     def_t = params["def_t"]; R_item = rayon_ini_norm
-    
-    # 1. Réduction du nombre de points
-    nb_r_total = 100  # sqrt(10000)
-    nb_t_total = 100  # sqrt(10000)
-    
-    # 2. Réduction du nombre de points de données
-    nb_t_data = 100 
-
-    # --- Création du DataSet avec les nouvelles tailles ---
+    nb_r_total = 500; nb_t_total = 500
     X_r_f_total = torch.linspace(0, R_item, nb_r_total).view(-1, 1)
     X_t_f_total = torch.linspace(0, def_t, nb_t_total).view(-1, 1)
     grid_r_f, grid_t_f = torch.meshgrid(X_r_f_total.squeeze(), X_t_f_total.squeeze(), indexing="ij")
-    X_fick_total = torch.stack([grid_r_f.flatten(), grid_t_f.flatten()], dim=1) # Total = 10000 points
-    
-    X_R_data_total = torch.full((nb_t_data, 1), R_item); X_t_data_total = torch.linspace(0, def_t, nb_t_data).view(-1, 1)
+    X_fick_total = torch.stack([grid_r_f.flatten(), grid_t_f.flatten()], dim=1)
+    X_R_data_total = torch.full((nb_t_total, 1), R_item); X_t_data_total = torch.linspace(0, def_t, nb_t_total).view(-1, 1)
     X_boundary_total = torch.cat([X_R_data_total, X_t_data_total], dim=1)
-    X_r_ini_total = torch.linspace(0, R_item, nb_t_data).view(-1, 1); X_t_ini_total = torch.zeros((nb_t_data, 1))
+    X_r_ini_total = torch.linspace(0, R_item, nb_t_total).view(-1, 1); X_t_ini_total = torch.zeros((nb_t_total, 1))
     X_ini_total = torch.cat([X_r_ini_total, X_t_ini_total], dim=1)
-    X_data_total = torch.cat([X_boundary_total, X_ini_total], dim=0) # Total = 200 points
-    
+    X_data_total = torch.cat([X_boundary_total, X_ini_total], dim=0)
     print(f"DataSet créé: {X_fick_total.shape[0]} points de physique, {X_data_total.shape[0]} points de données.")
 
     loss = [[] for _ in range(5)]
@@ -204,72 +198,80 @@ def run_original_batch(params_pinns: dict, params: dict, S_f: DataAugmentation, 
     model_opti = copy.deepcopy(model)
     min_loss_val = float('inf')
 
-    # --- PHASE 1: ADAM - NOUVELLE LOGIQUE DE MINI-BATCHING COMPLET ---
-    print("\n--- Phase 1: Adam Optimizer (Mini-Batching Complet) ---")
+    # --- PHASE 1: ADAM AVEC MINI-BATCHS (inchangé) ---
+    print("\n--- Phase 1: Adam Optimizer avec Mini-Batching ---")
     optimizer = optim.Adam(model.parameters(), lr=params_pinns['lr'])
-    epochs_phase1 = 10 # 10 époques pour le test
-    
-    # 3. Définition des tailles de batch
-    fick_batch_size = 1000
-    data_batch_size = 100 # J'ai mis 100 au lieu de 10 car 10 est très petit et vous avez 200 points de données.
-    
-    # Création des DataLoaders pour gérer les batchs facilement
-    fick_dataset = torch.utils.data.TensorDataset(X_fick_total)
-    fick_loader = torch.utils.data.DataLoader(fick_dataset, batch_size=fick_batch_size, shuffle=True)
-    data_dataset = torch.utils.data.TensorDataset(X_data_total)
-    data_loader = torch.utils.data.DataLoader(data_dataset, batch_size=data_batch_size, shuffle=True)
+    epochs_phase1 = 9000
+    for it in tqdm(range(epochs_phase1), desc="Phase 1 (Adam)", file=sys.stdout):
+        fick_indices = torch.randint(0, X_fick_total.shape[0], (batch_size // 2,))
+        data_indices = torch.randint(0, X_data_total.shape[0], (batch_size // 2,))
+        X_fick_batch = X_fick_total[fick_indices]
+        X_data_batch = X_data_total[data_indices]
+        optimizer.zero_grad()
+        L, L_total_list = cost_original_batch(model, F_f, S_f, S_j, X_fick_batch, X_data_batch)
+        L.backward(); optimizer.step()
+        if it % 10 == 0:
+            for i in range(len(L_total_list)): loss[i].append(L_total_list[i])
+            if var_R: loss[-1].append(model.R.item())
+            if L_total_list[0] < min_loss_val:
+                min_loss_val = L_total_list[0]
+                model_opti = copy.deepcopy(model)
 
-    for epoch in range(epochs_phase1):
-        epoch_loss_sum = 0.0
-        # On itère sur les deux loaders en parallèle
-        # zip s'arrêtera quand le plus petit loader sera épuisé (celui des données)
-        for (fick_batch,), (data_batch,) in tqdm(zip(fick_loader, data_loader), desc=f"Epoch {epoch+1}/{epochs_phase1} (Adam)", file=sys.stdout):
-            optimizer.zero_grad()
-            L, L_total_list = cost_original_batch(model, F_f, S_f, S_j, fick_batch, data_batch)
-            L.backward(); optimizer.step()
-            epoch_loss_sum += L_total_list[0]
-
-        # Logging à la fin de chaque époque complète
-        avg_epoch_loss = epoch_loss_sum / len(data_loader)
-        if avg_epoch_loss < min_loss_val: 
-            min_loss_val = avg_epoch_loss
-            model_opti = copy.deepcopy(model)
-        
-        # On log les composantes du dernier batch pour le graphique
-        for i in range(len(L_total_list)): loss[i].append(L_total_list[i])
-        if var_R: loss[-1].append(model.R.item())
-
-    ### On repart du MEILLEUR modèle (inchangé) ###
+    # === MODIFICATION 1: On charge explicitement le meilleur modèle trouvé par Adam ===
     print(f"\nFin de la phase Adam. Meilleure perte trouvée : {min_loss_val:.2e}")
     print("Chargement du meilleur modèle pour L-BFGS...")
     model.load_state_dict(model_opti.state_dict())
     
-    # --- PHASE 2: L-BFGS - TEST RAPIDE ---
-    print("\n--- Phase 2: L-BFGS Optimizer (Test Rapide) ---")
-    optimizer_lbfgs = optim.LBFGS(model.parameters(), lr=1.0, max_iter=20, history_size=100, line_search_fn="strong_wolfe")
-    last_closure_metrics = {}
-    epochs_phase2 = 10 # 10 époques pour le test
+    # === MODIFICATION 2: Refonte complète de la phase L-BFGS ===
+    print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch ---")
+    
+    # === MODIFICATION 3: Ajustement des hyperparamètres ===
+    # On crée un nouvel optimiseur. lr=1.0 est standard. 
+    # max_iter est le nombre d'itérations que L-BFGS va réellement faire. 10 était trop peu.
+    # history_size est bon.
+    optimizer_lbfgs = optim.LBFGS(
+        model.parameters(), 
+        lr=1.0, 
+        max_iter=500,  # Augmenté de 10 à 500 pour une vraie optimisation
+        history_size=150, 
+        line_search_fn="strong_wolfe"
+    )
 
-    for epoch in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)", file=sys.stdout):
-        def closure():
-            optimizer_lbfgs.zero_grad()
-            L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
-            L.backward()
-            nonlocal last_closure_metrics
-            last_closure_metrics['components'] = L_total_list
-            if var_R: last_closure_metrics['R'] = model.R.item()
-            return L
+    # === MODIFICATION 4: Logging à l'intérieur de la closure ===
+    # On utilise une variable pour suivre les itérations internes de L-BFGS
+    lbfgs_iter = 0
+    
+    def closure():
+        nonlocal lbfgs_iter, min_loss_val, model_opti
         
-        optimizer_lbfgs.step(closure)
-        final_epoch_components = last_closure_metrics.get('components', [0]*5)
-        for i in range(len(final_epoch_components)): loss[i].append(final_epoch_components[i])
-        if var_R: loss[-1].append(last_closure_metrics.get('R', model.R.item()))
-        current_loss = final_epoch_components[0]
-        if current_loss < min_loss_val:
-            min_loss_val = current_loss
+        optimizer_lbfgs.zero_grad()
+        L, L_total_list = cost_full_batch(model, F_f, S_f, S_j, X_fick_total, X_data_total)
+        L.backward()
+        
+        # Le logging se fait maintenant ici, à chaque appel de la closure
+        # Cela nous donne la vraie courbe de descente de L-BFGS
+        current_loss_val = L_total_list[0]
+        
+        # On log les composantes toutes les 10 itérations pour ne pas surcharger le log
+        if lbfgs_iter % 10 == 0:
+            print(f"  [L-BFGS iter {lbfgs_iter:03d}] Loss: {current_loss_val:.2e}")
+            for i in range(len(L_total_list)): loss[i].append(L_total_list[i])
+            if var_R: loss[-1].append(model.R.item())
+
+        # On continue de chercher le meilleur modèle
+        if current_loss_val < min_loss_val:
+            min_loss_val = current_loss_val
             model_opti = copy.deepcopy(model)
+        
+        lbfgs_iter += 1
+        return L
+
+    # On appelle UNE SEULE FOIS optimizer.step(). C'est lui qui va appeler la closure
+    # de manière répétée jusqu'à convergence ou max_iter.
+    optimizer_lbfgs.step(closure)
 
     print(f"\nEntraînement terminé. Meilleure perte finale (sum): {min_loss_val:.2e}")
+    # On s'assure que le modèle retourné est bien le meilleur trouvé
     return model_opti, loss
 
 # ==============================================================================
