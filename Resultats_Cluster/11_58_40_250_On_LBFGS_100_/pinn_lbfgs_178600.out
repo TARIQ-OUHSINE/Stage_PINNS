@@ -1,0 +1,39 @@
+D�but du job SLURM sur le noeud : lisnode2
+Thu Jul  3 08:35:10 AM CEST 2025
+Activation de l'environnement Python...
+Cr�ation du dossier de sortie : /home/tariq.ouhsine/Stage_PINNS/results/11_58_40_250_On_LBFGS_100_
+Lancement du script Python...
+Chargement des données depuis : /home/tariq.ouhsine/Stage_PINNS/data_test/donnees.pkl
+Cas à traiter : 11_58_40_250
+Les résultats seront sauvegardés dans : /home/tariq.ouhsine/Stage_PINNS/results
+Création du DataSet de points de collocation (VERSION RAPIDE)...
+DataSet créé: 10000 points de physique, 200 points de données.
+
+--- Phase 1: Adam Optimizer (Mini-Batching Complet) ---
+Epoch 1/10 (Adam): 0it [00:00, ?it/s]Epoch 1/10 (Adam): 1it [00:00,  1.98it/s]Epoch 1/10 (Adam): 2it [00:00,  3.56it/s]
+Epoch 2/10 (Adam): 0it [00:00, ?it/s]Epoch 2/10 (Adam): 2it [00:00, 19.68it/s]Epoch 2/10 (Adam): 2it [00:00, 18.46it/s]
+Epoch 3/10 (Adam): 0it [00:00, ?it/s]Epoch 3/10 (Adam): 2it [00:00, 22.14it/s]
+Epoch 4/10 (Adam): 0it [00:00, ?it/s]Epoch 4/10 (Adam): 2it [00:00, 24.40it/s]
+Epoch 5/10 (Adam): 0it [00:00, ?it/s]Epoch 5/10 (Adam): 2it [00:00, 24.55it/s]
+Epoch 6/10 (Adam): 0it [00:00, ?it/s]Epoch 6/10 (Adam): 2it [00:00, 22.48it/s]
+Epoch 7/10 (Adam): 0it [00:00, ?it/s]Epoch 7/10 (Adam): 2it [00:00, 23.62it/s]
+Epoch 8/10 (Adam): 0it [00:00, ?it/s]Epoch 8/10 (Adam): 2it [00:00, 23.98it/s]
+Epoch 9/10 (Adam): 0it [00:00, ?it/s]Epoch 9/10 (Adam): 2it [00:00, 24.47it/s]
+Epoch 10/10 (Adam): 0it [00:00, ?it/s]Epoch 10/10 (Adam): 2it [00:00, 24.65it/s]
+
+Fin de la phase Adam. Meilleure perte trouvée : 2.47e-01
+Chargement du meilleur modèle pour L-BFGS...
+
+--- Phase 2: L-BFGS Optimizer (Test Rapide) ---
+Phase 2 (L-BFGS):   0%|          | 0/10 [00:00<?, ?it/s]Phase 2 (L-BFGS):  30%|███       | 3/10 [00:07<00:16,  2.33s/it]Phase 2 (L-BFGS):  40%|████      | 4/10 [00:09<00:13,  2Phase 2 (L-BFGS):  60%|██████    | 6/10 [00:13<00:08,  2.16s/it]PhasePhase 2 (L-BFGS):  80%|████████  | 8/10 [00:17<00:04,  2
+
+Entraînement terminé. Meilleure perte finale (sum): 1.95e-02
+Résultats sauvegardés dans /home/tariq.ouhsine/Stage_PINNS/results/11_58_40_250_On_LBFGS_500_/Data
+Génération des graphiques pour les résultats dans : /home/tariq.ouhsine/Stage_PINNS/results/11_58_40_250_On_LBFGS_500_
+
+=== FIN DE L'EXPÉRIENCE ===
+Fin du job SLURM
+Thu Jul  3 08:35:45 AM CEST 2025
+D�placement des fichiers de log vers le dossier de r�sultats...
+Fichier .out d�plac� vers /home/tariq.ouhsine/Stage_PINNS/results/11_58_40_250_On_LBFGS_100_
+Fichier .err d�plac� vers /home/tariq.ouhsine/Stage_PINNS/results/11_58_40_250_On_LBFGS_100_

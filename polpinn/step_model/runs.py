@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 from polpinn.simple_model.data import load_data, data_augmentation
 from polpinn.simple_model.model import G_MLP, PointPolarization
-# Assurez-vous que le fichier losses.py est bien celui que je vous ai fourni, basé sur le poster
+# le fichier losses.py est bien celui basé sur le poster
 from polpinn.step_model.losses1 import compute_loss 
 from polpinn.step_model.utils import step_function
 from polpinn.utils import get_data_dir, get_output_dir
@@ -20,7 +20,7 @@ def run(name="Moyenne_homo_HyperP", seed=1234, update_progress=None):
         "n_layers": 2,
         "n_neurons_per_layer": 32,
         "lr": 0.001,      # Taux d'apprentissage pour Adam
-        "epoch": 1000,   # Augmenté pour donner le temps au modèle de converger
+        "epoch": 9000,   # Augmenté pour donner le temps au modèle de converger
         "var_R": False,
     }
 
@@ -28,9 +28,9 @@ def run(name="Moyenne_homo_HyperP", seed=1234, update_progress=None):
     # Ces valeurs sont un bon point de départ, n'hésitez pas à les ajuster.
     loss_weights = {
         "pde": 1.0,               # Le poids de base pour la physique
-        "conservation_data": 10.0,# Cette contrainte de données est importante
-        "init": 100.0,            # La condition initiale doit être fortement respectée
-        "symmetry": 100.0,        # La condition de symétrie aussi
+        "conservation_data": 1.0,# Cette contrainte de données est importante
+        "init": 1.0,            # La condition initiale doit être fortement respectée
+        "symmetry": 1.0,        # La condition de symétrie aussi
     }
     
     # --- Chargement des données (inchangé) ---
@@ -127,7 +127,7 @@ def run(name="Moyenne_homo_HyperP", seed=1234, update_progress=None):
     ax[1].set_title('Data out')
     plt.savefig(out_dir / f"{params['name']}_data.pdf")
 
-    fig, ax = plt.subplots(1, 1, figsize=(26, 8))
+    fig, ax = plt.subplots(1, 1, figsize=(16, 8))
     for k in losses:
         ax.plot(losses[k], label=k)
     ax.set_yscale("log")

@@ -1,0 +1,39 @@
+D�but du job SLURM sur le noeud : lisnode2
+Thu Jul  3 09:15:34 AM CEST 2025
+Activation de l'environnement Python...
+Cr�ation du dossier de sortie : /home/tariq.ouhsine/Stage_PINNS/results/LongTime_60_20_300_2500_On
+Lancement du script Python...
+Chargement des données depuis : /home/tariq.ouhsine/Stage_PINNS/data_test/donnees.pkl
+Cas à traiter : LongTime_60_20_300_2500
+Les résultats seront sauvegardés dans : /home/tariq.ouhsine/Stage_PINNS/results
+Création du DataSet de points de collocation (VERSION RAPIDE)...
+DataSet créé: 10000 points de physique, 200 points de données.
+
+--- Phase 1: Adam Optimizer (Mini-Batching Complet) ---
+Epoch 1/10 (Adam): 0it [00:00, ?it/s]Epoch 1/10 (Adam): 1it [00:00,  2.86it/s]Epoch 1/10 (Adam): 4it [00:00, 10.52it/s]Epoch 1/10 (Adam): 7it [00:00, 16.11it/s]Epoch 1/10 (Adam): 10it [00:00, 15.30it/s]
+Epoch 2/10 (Adam): 0it [00:00, ?it/s]Epoch 2/10 (Adam): 4it [00:00, 30.56it/s]Epoch 2/10 (Adam): 8it [00:00, 28.78it/s]Epoch 2/10 (Adam): 10it [00:00, 29.15it/s]
+Epoch 3/10 (Adam): 0it [00:00, ?it/s]Epoch 3/10 (Adam): 4it [00:00, 31.36it/s]Epoch 3/10 (Adam): 8it [00:00, 31.63it/s]Epoch 3/10 (Adam): 10it [00:00, 31.51it/s]
+Epoch 4/10 (Adam): 0it [00:00, ?it/s]Epoch 4/10 (Adam): 4it [00:00, 30.67it/s]Epoch 4/10 (Adam): 8it [00:00, 31.15it/s]Epoch 4/10 (Adam): 10it [00:00, 31.08it/s]
+Epoch 5/10 (Adam): 0it [00:00, ?it/s]Epoch 5/10 (Adam): 4it [00:00, 31.43it/s]Epoch 5/10 (Adam): 8it [00:00, 29.34it/s]Epoch 5/10 (Adam): 10it [00:00, 29.88it/s]
+Epoch 6/10 (Adam): 0it [00:00, ?it/s]Epoch 6/10 (Adam): 2it [00:00,  8.67it/s]Epoch 6/10 (Adam): 6it [00:00, 18.53it/s]Epoch 6/10 (Adam): 10it [00:00, 23.31it/s]Epoch 6/10 (Adam): 10it [00:00, 20.35it/s]
+Epoch 7/10 (Adam): 0it [00:00, ?it/s]Epoch 7/10 (Adam): 3it [00:00, 28.90it/s]Epoch 7/10 (Adam): 7it [00:00, 30.57it/s]Epoch 7/10 (Adam): 10it [00:00, 30.68it/s]
+Epoch 8/10 (Adam): 0it [00:00, ?it/s]Epoch 8/10 (Adam): 4it [00:00, 31.07it/s]Epoch 8/10 (Adam): 8it [00:00, 31.24it/s]Epoch 8/10 (Adam): 10it [00:00, 29.70it/s]
+Epoch 9/10 (Adam): 0it [00:00, ?it/s]Epoch 9/10 (Adam): 3it [00:00, 28.02it/s]Epoch 9/10 (Adam): 7it [00:00, 29.66it/s]Epoch 9/10 (Adam): 10it [00:00, 29.84it/s]
+Epoch 10/10 (Adam): 0it [00:00, ?it/s]Epoch 10/10 (Adam): 4it [00:00, 30.81it/s]Epoch 10/10 (Adam): 8it [00:00, 30.72it/s]Epoch 10/10 (Adam): 10it [00:00, 30.68it/s]
+
+Fin de la phase Adam. Meilleure perte trouvée : 1.40e-01
+Chargement du meilleur modèle pour L-BFGS...
+
+--- Phase 2: L-BFGS Optimizer (Test Rapide) ---
+Phase 2 (L-BFGS):   0%|          | 0/10 [00:00<?, ?it/s]Phase 2 (L-BFGS):  10%|█         | 1/10 [00:02<00:22,  2.53s/it]Phase 2 (L-BFGS):  20%|██        | 2/10 [00:05<00:20,  2.58s/it]Phase 2 (L-BFGS):  30%|███       | 3/10 [00:07<00:16,  2.31s/it]Phase 2 (L-BFGS):  40%|████      | 4/10 [00:09<00:13,  2.24s/it]Phase 2 (L-BFGS):  50%|█████     | 5/10 [00:11<00:10,  2.19s/it]Phase 2 (L-BFGS):  60%|██████    | 6/10 [00:13<00:08,  2.18s/it]Phase 2 (L-BFGS):  70%|███████   | 7/10 [00:15<00:06,  2.10s/it]Phase 2 (L-BFGS):  80%|████████  | 8/10 [00:17<00:04,  2.04s/it]Phase 2 (L-BFGS):  90%|█████████ | 9/10 [00:19<00:02,  2.11s/it]Phase 2 (L-BFGS): 100%|██████████| 10/10 [00:21<00:00,  1.96s/it]Phase 2 (L-BFGS): 100%|██████████| 10/10 [00:21<00:00,  2.13s/it]
+
+Entraînement terminé. Meilleure perte finale (sum): 1.08e-03
+Résultats sauvegardés dans /home/tariq.ouhsine/Stage_PINNS/results/LongTime_60_20_300_2500_On/Data
+Génération des graphiques pour les résultats dans : /home/tariq.ouhsine/Stage_PINNS/results/LongTime_60_20_300_2500_On
+
+=== FIN DE L'EXPÉRIENCE ===
+Fin du job SLURM
+Thu Jul  3 09:16:12 AM CEST 2025
+D�placement des fichiers de log vers le dossier de r�sultats...
+Fichier .out d�plac� vers /home/tariq.ouhsine/Stage_PINNS/results/LongTime_60_20_300_2500_On
+Fichier .err d�plac� vers /home/tariq.ouhsine/Stage_PINNS/results/LongTime_60_20_300_2500_On
