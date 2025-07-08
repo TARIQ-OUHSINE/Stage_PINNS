@@ -355,7 +355,7 @@ def affichage(path: Path):
     ax1.legend(); ax1.grid(True)
     fig.tight_layout(); fig.savefig(graph_dir / "loss_evolution.png"); plt.close(fig)
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8))
     t_plot = torch.linspace(0, params["def_t"], 200).view(-1, 1)
     X_solid_boundary = torch.cat([torch.tensor(R_final_norm).repeat(t_plot.shape[0], 1), t_plot], dim=1)
     X_solid_boundary.requires_grad_(True)
