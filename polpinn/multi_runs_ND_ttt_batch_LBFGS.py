@@ -346,7 +346,7 @@ if __name__ == "__main__":
     # --- CONFIGURATION (gardée pour les paramètres du PINN) ---
     CASE = "On"
     params_pinns = {
-        "nb_hidden_layer": 2, "nb_hidden_perceptron": 64,
+        "nb_hidden_layer": 4, "nb_hidden_perceptron": 64,
         "lr": 0.001, "lr_R": 0.0005,
         "epoch": 5000, "var_R": False,
         "batch_size": 100,
