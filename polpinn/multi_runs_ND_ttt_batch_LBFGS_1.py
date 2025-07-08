@@ -344,7 +344,7 @@ def affichage(path: Path):
     else: R_final_norm = model.R.item()
     R_final_m = R_final_norm * (10**ordre_R)
     
-    fig, ax1 = plt.subplots(1, 1, figsize=(20, 8))
+    fig, ax1 = plt.subplots(1, 1, figsize=(18, 8))
     loss_names = ["Total Sum", "L_solid", "L_boundary", "L_initial", "L_fick"]
     for i, name in enumerate(loss_names):
         ax1.plot(loss[i], label=name)
