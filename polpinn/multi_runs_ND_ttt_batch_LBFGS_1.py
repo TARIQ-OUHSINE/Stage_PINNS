@@ -421,7 +421,6 @@ if __name__ == "__main__":
         "epoch": 5000,
         "var_R": False,
         "batch_size": 100,
-        # N'oubliez pas vos poids si vous les utilisez !
         # "weights": { "solid": 1.0, "boundary": 1.0, "initial": 10.0, "fick": 1.0 }
     }
 
