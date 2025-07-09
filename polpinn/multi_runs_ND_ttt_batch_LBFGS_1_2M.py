@@ -374,7 +374,7 @@ if __name__ == "__main__":
     
     params_pinns = {
         "nb_hidden_layer": 2, "nb_hidden_perceptron": 32, "lr": 0.001,
-        "epoch": 5000, "var_R": False, "batch_size": 256, # var_R est False
+        "epoch": 5000, "var_R": False, "batch_size": 256, 
     }
 
     data_file = Path(args.data_file)
@@ -398,12 +398,18 @@ if __name__ == "__main__":
     R_vrai_m = exp_data["R_s"] * 1.0e-9
     R_prime_m = R_vrai_m * 5.0 # R' = 5 * R
     
+        # --- CALCUL DES PARAMÈTRES PHYSIQUES ---
+    C_ref, D_ref_nm2_s = 60.0, 500.0
+    D_ref_m2_s = D_ref_nm2_s * 1e-18
+    C_f, C_j = exp_data.get("C_f", C_ref), exp_data.get("C_j", C_ref)
+    D_f_calculated = D_ref_m2_s * ((C_f / C_ref) ** (1/3))
+
     params = {
-        "D_f": exp_data.get("D_f", 500e-18), # Diffusion solide
-        "D_j": exp_data.get("D_j", 2000e-18),# Diffusion liquide (exemple, à fournir)
-        "T_1_f": exp_data.get("T_1_f", 20.0),# Relaxation solide
-        "T_1_j": exp_data.get("T_1_j", 2.0), # Relaxation liquide (exemple, à fournir)
-        "P0_f": exp_data[solid_data_key]["P0_j"], 
+        "D_f": D_f_calculated, # Diffusion solide
+        "D_j": exp_data.get("D_j", 500e-18),# Diffusion liquide (exemple, à fournir)
+        "T_1_f": exp_data["T_1"],# Relaxation solide
+        "T_1_j": exp_data.get("T_1_j", 20.0), # Relaxation liquide (exemple, à fournir)
+        "P0_f": 1.0, 
         "P0_j": exp_data[solvent_data_key]["P0_j"],
         "def_t": max(exp_data[solid_data_key]["t"]),
         "name": f"{EXP_NAME_TO_RUN}_{CASE}_two_media", 
