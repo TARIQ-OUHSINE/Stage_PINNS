@@ -336,7 +336,7 @@ def affichage(path: Path):
 # ==============================================================================
 
 if __name__ == "__main__":
-    ### MODIFIÉ ###: Mise en place du parser d'arguments
+    # Mise en place du parser d'arguments
     parser = argparse.ArgumentParser(description="Lancement d'une simulation PINN pour un cas spécifique.")
     parser.add_argument('--data_file', type=str, required=True, help="Chemin vers le fichier de données principal (donnees.pkl)")
     parser.add_argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine où les résultats seront sauvegardés.")
@@ -352,13 +352,12 @@ if __name__ == "__main__":
         "batch_size": 100,
     }
 
-    ### MODIFIÉ ###: Utilisation des arguments pour définir les chemins
+    # Utilisation des arguments pour définir les chemins
     # Les chemins sont maintenant flexibles et donnés par l'utilisateur
     EXP_NAME_TO_RUN = args.case_name
     data_file = Path(args.data_file)
     base_output = Path(args.output_dir)
 
-    # Le reste de la logique est inchangé, elle utilise les variables définies ci-dessus
     # --- CHARGEMENT ET PRÉPARATION ---
     print(f"Chargement des données depuis : {data_file}")
     print(f"Cas à traiter : {EXP_NAME_TO_RUN}")
@@ -367,7 +366,7 @@ if __name__ == "__main__":
     with open(data_file, "rb") as f: all_data = pickle.load(f)
     exp_data = all_data[EXP_NAME_TO_RUN]
     solid_data_key, solvent_data_key = "Cris" + CASE, "Juice" + CASE
-    output_path = base_output / f"{EXP_NAME_TO_RUN}_{CASE}_NLBFGS_NavStk"
+    output_path = base_output / f"{EXP_NAME_TO_RUN}_{CASE}_result"
     if output_path.exists(): shutil.rmtree(output_path)
     (output_path / "Data").mkdir(parents=True, exist_ok=True)
     (output_path / "Graphiques").mkdir(parents=True, exist_ok=True)
