@@ -347,7 +347,7 @@ if __name__ == "__main__":
     CASE = "On"
     params_pinns = {
         "nb_hidden_layer": 4, "nb_hidden_perceptron": 40,
-        "lr": 0.001, "lr_R": 0.0005,
+        "lr": 0.001, "lr_R": 0.0001,
         "epoch": 5000, "var_R": False,
         "batch_size": 100,
     }
