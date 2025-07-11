@@ -1,5 +1,6 @@
 # ==============================================================================
 #           SCRIPT UNIQUE - VERSION CORRIGÉE ET VÉRIFIÉE
+#               Correction du graphe de calcul et pondération manuelle
 # ==============================================================================
 
 import sys
@@ -19,7 +20,10 @@ import math
 import matplotlib.pyplot as plt
 import argparse
 
-# SECTION 1: OUTILS ET DÉFINITIONS (Inchangé, correct)
+# ==============================================================================
+# SECTION 1: OUTILS ET DÉFINITIONS
+# ==============================================================================
+
 class Physics_informed_nn(nn.Module):
     def __init__(self, nb_layer: int, hidden_layer: int, rayon_R_norm: float, coeff_normal: float):
         super(Physics_informed_nn, self).__init__()
@@ -28,14 +32,18 @@ class Physics_informed_nn(nn.Module):
         self.fc = nn.ModuleList([nn.Linear(hidden_layer, hidden_layer) for _ in range(nb_layer)])
         self.fc_out = nn.Linear(hidden_layer, 1)
         self.R_norm = torch.tensor(rayon_R_norm, dtype=torch.float32)
+
     def forward(self, x):
         x = torch.tanh(self.fc_int(x))
-        for fc in self.fc: x = torch.tanh(fc(x))
-        x = torch.sigmoid(self.fc_out(x)); return x
+        for fc in self.fc:
+            x = torch.tanh(fc(x))
+        x = torch.sigmoid(self.fc_out(x))
+        return x
 
 class Fick:
     def __init__(self, D, T, P_0):
         self.D, self.T, self.P_0 = D, T, P_0
+
     def __call__(self, P_func, X):
         X.requires_grad_(True)
         X_r = X[:, 0].view(-1, 1)
@@ -66,16 +74,20 @@ class DataAugmentation:
         best_params, self.min_loss = self._run_fit()
         if self.mono: self.tau, self.C = best_params
         else: self.tau, self.beta, self.C = best_params
+
     def __call__(self, t):
         t_np = t.detach().numpy() if isinstance(t, torch.Tensor) else t
         t_safe = np.where(t_np == 0, 1e-9, t_np)
         val = self.C * (1 - np.exp(-((t_safe / self.tau) ** self.beta)))
-        val = np.where(t_np == 0, 0, val); return torch.tensor(val, dtype=torch.float32)
+        val = np.where(t_np == 0, 0, val)
+        return torch.tensor(val, dtype=torch.float32)
+
     def _cost(self, params):
         if self.mono: self.tau, self.C = params
         else: self.tau, self.beta, self.C = params
         y_pred = self.C * (1 - np.exp(-((self.times / self.tau) ** self.beta)))
         return np.mean((y_pred - self.list_y_norm) ** 2)
+
     def _run_fit(self):
         initial_params = [self.tau, self.beta, self.C]
         if self.mono: initial_params = [self.tau, self.C]
@@ -87,6 +99,7 @@ class DataAugmentation:
 # ==============================================================================
 
 def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, R_norm, R_prime_norm):
+    # --- Pertes de Physique (Fick) ---
     X_fick_batch.requires_grad_(True)
     r_fick = X_fick_batch[:, 0]
     X_fick_solid = X_fick_batch[r_fick < R_norm]
@@ -94,30 +107,33 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     L_fick_s = torch.mean(torch.square(F_solid(P_from_G(model(X_fick_solid), X_fick_solid), X_fick_solid))) if X_fick_solid.shape[0] > 0 else torch.tensor(0.0)
     L_fick_l = torch.mean(torch.square(F_liquid(P_from_G(model(X_fick_liquid), X_fick_liquid), X_fick_liquid))) if X_fick_liquid.shape[0] > 0 else torch.tensor(0.0)
     
+    # --- Pertes sur les Données et Conditions aux Limites ---
     X_data_batch.requires_grad_(True)
     t_vals = X_data_batch[:, 1]
     X_boundary_batch = X_data_batch[t_vals > 0]
     t_boundary_batch = X_boundary_batch[:, 1].view(-1, 1)
     X_ini_batch = X_data_batch[t_vals == 0]
 
+    # Perte L_yz
     G_pred_at_R_prime = model(X_boundary_batch)
     vol_frac_solid = (R_norm**3) / (R_prime_norm**3)
     G_target_from_data = (1.0 - vol_frac_solid) * S_j(t_boundary_batch) + vol_frac_solid * S_f(t_boundary_batch)
     L_yz = torch.mean(torch.square(G_pred_at_R_prime - G_target_from_data))
+    
+    # Perte L_ini
     L_ini = torch.mean(torch.square(P_from_G(model(X_ini_batch), X_ini_batch))) if X_ini_batch.shape[0] > 0 else torch.tensor(0.0)
 
-    ### CORRECTION CRITIQUE ###
-    # Créer un tenseur propre pour évaluer G(R,t) sans perturber le graphe de calcul.
+    # Perte L_solide (CORRECTION TECHNIQUE)
     X_solid_boundary_batch = torch.cat([torch.full_like(t_boundary_batch, R_norm), t_boundary_batch], dim=1)
     L_solide = torch.mean(torch.square(model(X_solid_boundary_batch) - S_f(t_boundary_batch)))
 
+    # Perte L_gradient_nul
     X_grad_batch.requires_grad_(True)
     P_grad = P_from_G(model(X_grad_batch), X_grad_batch)
     dP_dr = torch.autograd.grad(P_grad, X_grad_batch, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
     L_gradient_nul = torch.mean(torch.square(dP_dr))
 
-    ### CORRECTION CRITIQUE ###
-    # Pondération MANUELLE agressive pour prioriser les données
+    # Pondération MANUELLE agressive pour prioriser les données (CORRECTION LOGIQUE)
     w_data = 100.0
     w_phys = 1.0
     
@@ -127,6 +143,7 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     return total_loss, loss_components
 
 def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, R_norm, R_prime_norm):
+    # Pertes Fick
     X_fick_total.requires_grad_(True)
     r_fick = X_fick_total[:, 0]
     X_fick_solid = X_fick_total[r_fick < R_norm]
@@ -134,6 +151,7 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     L_fick_s = torch.mean(torch.square(F_solid(P_from_G(model(X_fick_solid), X_fick_solid), X_fick_solid)))
     L_fick_l = torch.mean(torch.square(F_liquid(P_from_G(model(X_fick_liquid), X_fick_liquid), X_fick_liquid)))
     
+    # Pertes Données
     X_data_total.requires_grad_(True)
     t_vals = X_data_total[:, 1]
     X_boundary = X_data_total[t_vals > 0]
@@ -146,16 +164,17 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     L_yz = torch.mean(torch.square(G_pred_at_R_prime - G_target_from_data))
     L_ini = torch.mean(torch.square(P_from_G(model(X_ini), X_ini)))
     
-    ### CORRECTION CRITIQUE ###
+    # Perte L_solide (CORRECTION TECHNIQUE)
     X_solid_boundary = torch.cat([torch.full_like(t_boundary, R_norm), t_boundary], dim=1)
     L_solide = torch.mean(torch.square(model(X_solid_boundary) - S_f(t_boundary)))
 
+    # Perte L_gradient_nul
     X_grad_total.requires_grad_(True)
     P_grad = P_from_G(model(X_grad_total), X_grad_total)
     dP_dr = torch.autograd.grad(P_grad, X_grad_total, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
     L_gradient_nul = torch.mean(torch.square(dP_dr))
 
-    ### CORRECTION CRITIQUE ###
+    # Pondération MANUELLE agressive (CORRECTION LOGIQUE)
     w_data = 100.0
     w_phys = 1.0
     
@@ -163,10 +182,6 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
 
     loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), L_solide.item(), L_gradient_nul.item()]
     return total_loss, loss_components
-
-# Le reste du code (run_enhanced_case, affichage, main) reste identique à la version précédente.
-# Il suffit de copier-coller ces deux fonctions corrigées dans votre script.
-# Je joins le code complet pour être sûr.
 
 def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
     torch.manual_seed(1234)
@@ -250,7 +265,16 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     print(f"\nEntraînement terminé. Meilleure perte (sum): {min_loss_val:.2e}")
     return model_opti, loss
 
-# SECTION 3 et 4 sont identiques à la version précédente et restent valides.
+# ==============================================================================
+# SECTION 3: SAUVEGARDE ET VISUALISATION
+# ==============================================================================
+def save_results(model, loss_history, params_pinns, params, path):
+    file_path = path / "Data"
+    torch.save(model.state_dict(), file_path / "model.pth")
+    with open(file_path / "loss.json", "w") as f: json.dump(loss_history, f)
+    with open(file_path / "params.json", "w") as f: json.dump(params, f, indent=4)
+    with open(file_path / "params_PINNS.json", "w") as f: json.dump(params_pinns, f, indent=4)
+    print(f"Résultats sauvegardés dans {file_path}")
 
 def affichage(path: Path):
     print(f"Génération des graphiques pour : {path}")
@@ -314,36 +338,62 @@ def affichage(path: Path):
     ax.set_xlabel('Rayon r (nm)'); ax.set_ylabel('Temps t (s)'); ax.set_title(f"Polarisation (Solide + Solvant) - R = {R_m * 1e9:.1f} nm"); ax.legend()
     plt.savefig(graph_dir / "P_r_t_colormap.png"); plt.close(fig)
 
+# ==============================================================================
+# SECTION 4: SCRIPT PRINCIPAL D'EXÉCUTION
+# ==============================================================================
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Lancer un entraînement PINN pour le cas enrichi (deux milieux + pertes additionnelles).")
-    parser.add_argument('--data_file', type=str, required=True)
-    parser.add_argument('--output_dir', type=str, required=True)
-    parser.add_argument('--case_name', type=str, required=True)
+    parser.add_argument('--data_file', type=str, required=True, help="Chemin vers le fichier de données .pkl global.")
+    parser.add_argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine des résultats.")
+    parser.add_argument('--case_name', type=str, required=True, help="Le nom du cas à traiter.")
+    
     args = parser.parse_args()
     
-    params_pinns = {"nb_hidden_layer": 2, "nb_hidden_perceptron": 32, "lr": 0.001, "epoch": 5000, "var_R": False, "batch_size": 256}
-    data_file, base_output = Path(args.data_file), Path(args.output_dir)
-    
+    params_pinns = {
+        "nb_hidden_layer": 2, 
+        "nb_hidden_perceptron": 32, 
+        "lr": 0.001,
+        "epoch": 5000, 
+        "var_R": False, 
+        "batch_size": 256,
+    }
+
+    data_file = Path(args.data_file)
+    base_output = Path(args.output_dir)
+
+    print(f"--- Lancement du cas 'Corrigé': {args.case_name} ---")
     with open(data_file, "rb") as f: all_data = pickle.load(f)
-    if args.case_name not in all_data: print(f"ERREUR: Cas '{args.case_name}' non trouvé."); sys.exit()
-    
+
+    if args.case_name not in all_data:
+        print(f"ERREUR: Cas '{args.case_name}' non trouvé."); sys.exit()
+
     exp_data = all_data[args.case_name]
-    output_path = base_output / f"{args.case_name}_On_enhanced_v2_result"
+    solid_data_key, solvent_data_key = "CrisOn", "JuiceOn"
+    output_path = base_output / f"{args.case_name}_On_corrected_result"
+    
     if output_path.exists(): shutil.rmtree(output_path)
     (output_path / "Data").mkdir(parents=True, exist_ok=True)
     (output_path / "Graphiques").mkdir(parents=True, exist_ok=True)
     
     R_vrai_m = exp_data["R_s"] * 1.0e-9
+    
     params = {
-        "D_f": exp_data.get("D_f", 500e-18), "D_j": exp_data.get("D_j", 500e-18),
-        "T_1_f": exp_data.get("T_1_f", 20.0), "T_1_j": exp_data.get("T_1_j", 20.0),
-        "P0_f": exp_data["CrisOn"]["P0_j"], "P0_j": exp_data["JuiceOn"]["P0_j"],
-        "def_t": max(exp_data["CrisOn"]["t"]), "name": f"{args.case_name}_On_enhanced", 
-        "R_vrai_m": R_vrai_m, "R_prime_m": R_vrai_m * 5.0,
+        "D_f": exp_data.get("D_f", 500e-18), 
+        "D_j": exp_data.get("D_j", 500e-18),
+        "T_1_f": exp_data.get("T_1_f", 20.0), 
+        "T_1_j": exp_data.get("T_1_j", 20.0),
+        "P0_f": exp_data[solid_data_key]["P0_j"], 
+        "P0_j": exp_data[solvent_data_key]["P0_j"],
+        "def_t": max(exp_data[solid_data_key]["t"]),
+        "name": f"{args.case_name}_On_corrected", 
+        "R_vrai_m": R_vrai_m, 
+        "R_prime_m": R_vrai_m * 5.0,
     }
     
-    S_f = DataAugmentation(pd.DataFrame(exp_data["CrisOn"]), params["P0_j"])
-    S_j = DataAugmentation(pd.DataFrame(exp_data["JuiceOn"]), params["P0_j"])
+    coeff_normal = params["P0_j"]
+    S_f = DataAugmentation(pd.DataFrame(exp_data[solid_data_key]), coeff_normal)
+    S_j = DataAugmentation(pd.DataFrame(exp_data[solvent_data_key]), coeff_normal)
 
     model_final, loss_history = run_enhanced_case(params_pinns, params, S_f, S_j, output_path)
 
@@ -351,4 +401,5 @@ if __name__ == "__main__":
     with open(output_path / "Data" / "S_f.pkl", "wb") as f: pickle.dump(S_f, f)
     with open(output_path / "Data" / "S_j.pkl", "wb") as f: pickle.dump(S_j, f)
     affichage(output_path)
+
     print(f"\n=== FIN DE L'EXPÉRIENCE 'CORRIGÉE' POUR {args.case_name} ===")
