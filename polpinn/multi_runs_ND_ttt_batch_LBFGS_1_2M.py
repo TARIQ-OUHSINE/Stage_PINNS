@@ -399,7 +399,7 @@ if __name__ == "__main__":
 
     exp_data = all_data[EXP_NAME_TO_RUN]
     solid_data_key, solvent_data_key = "Cris" + CASE, "Juice" + CASE
-    output_path = base_output / f"{EXP_NAME_TO_RUN}_{CASE}_enhanced_result"
+    output_path = base_output / f"{EXP_NAME_TO_RUN}_{CASE}_two_media_result_1"
     
     if output_path.exists(): shutil.rmtree(output_path)
     (output_path / "Data").mkdir(parents=True, exist_ok=True)
