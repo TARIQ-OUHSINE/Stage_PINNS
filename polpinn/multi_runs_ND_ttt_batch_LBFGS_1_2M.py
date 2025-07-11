@@ -139,17 +139,15 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     dP_dr = torch.autograd.grad(P_grad, X_grad_batch, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
     L_gradient_nul = torch.mean(torch.square(dP_dr))
 
-    # --- Pondération dynamique (Mise à jour) ---
-    loss_sum = L_yz + L_ini + L_fick_s + L_fick_l + L_solide + L_gradient_nul
-    if loss_sum.item() > 1e-12:
-        gamma_yz, gamma_ini = L_yz/loss_sum, L_ini/loss_sum
-        gamma_fick_s, gamma_fick_l = L_fick_s/loss_sum, L_fick_l/loss_sum
-        gamma_solide, gamma_grad = L_solide/loss_sum, L_gradient_nul/loss_sum
-        total_loss = (gamma_yz*L_yz + gamma_ini*L_ini + gamma_fick_s*L_fick_s + gamma_fick_l*L_fick_l + gamma_solide*L_solide + gamma_grad*L_gradient_nul)
-    else:
-        total_loss = loss_sum
+    # --- Pondération MANUELLE ---
+    w_data = 100.0   # Poids élevé pour les termes de données
+    w_grad = 10.0     # Poids standard pour le gradient
+    w_phys = 1.0     # Poids plus faible pour la physique
 
-    loss_components = [loss_sum.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), L_solide.item(), L_gradient_nul.item()]
+    total_loss = (w_data * L_yz) + (w_data * L_solide) + L_ini + (w_grad * L_gradient_nul) + (w_phys * L_fick_s) + (w_phys * L_fick_l)
+
+    # La liste des composantes retournée reste la même pour l'affichage
+    loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), L_solide.item(), L_gradient_nul.item()]
     return total_loss, loss_components
 
 def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, R_norm, R_prime_norm):
@@ -186,17 +184,16 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     dP_dr = torch.autograd.grad(P_grad, X_grad_total, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
     L_gradient_nul = torch.mean(torch.square(dP_dr))
 
-    # Pondération
-    loss_sum = L_yz + L_ini + L_fick_s + L_fick_l + L_solide + L_gradient_nul
-    if loss_sum.item() > 1e-12:
-        gamma_yz, gamma_ini = L_yz/loss_sum, L_ini/loss_sum
-        gamma_fick_s, gamma_fick_l = L_fick_s/loss_sum, L_fick_l/loss_sum
-        gamma_solide, gamma_grad = L_solide/loss_sum, L_gradient_nul/loss_sum
-        total_loss = (gamma_yz*L_yz + gamma_ini*L_ini + gamma_fick_s*L_fick_s + gamma_fick_l*L_fick_l + gamma_solide*L_solide + gamma_grad*L_gradient_nul)
-    else:
-        total_loss = loss_sum
 
-    loss_components = [loss_sum.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), L_solide.item(), L_gradient_nul.item()]
+    # --- Pondération MANUELLE ---
+    w_data = 100.0   # Poids élevé pour les termes de données
+    w_grad = 10.0     # Poids standard pour le gradient
+    w_phys = 1.0     # Poids plus faible pour la physique
+
+    total_loss = (w_data * L_yz) + (w_data * L_solide) + L_ini + (w_grad * L_gradient_nul) + (w_phys * L_fick_s) + (w_phys * L_fick_l)
+
+    # La liste des composantes retournée reste la même pour l'affichage
+    loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), L_solide.item(), L_gradient_nul.item()]
     return total_loss, loss_components
 
 def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
