@@ -58,11 +58,13 @@ def P_from_G(G, X):
     dG_dr = torch.autograd.grad(G, X, grad_outputs=torch.ones_like(G), create_graph=True)[0][:, 0].view(-1, 1)
     return (X_r / 3) * dG_dr + G
 
-def normalisation(R, D_ref):
+def normalisation(R, D_ref, R_prime, D_prime):
     ordre_R = math.floor(math.log10(abs(R))) if R != 0 else -7
     R_norm = R * 10**(-ordre_R)
     D_norm = D_ref / (10**ordre_R)**2
-    return R_norm, D_norm, ordre_R
+    R_prime_norm = R_prime * 10**(-ordre_R)
+    D_prime_norm = D_prime / (10**ordre_R)**2
+    return R_norm, D_norm, R_prime_norm, D_prime_norm, ordre_R
 
 class DataAugmentation:
     def __init__(self, data_df, coeff_normal, mono=False):
@@ -95,7 +97,7 @@ class DataAugmentation:
         return result.x, result.fun
 
 # ==============================================================================
-# SECTION 2: MOTEUR D'ENTRAÎNEMENT (CORRIGÉ)
+# SECTION 2: MOTEUR D'ENTRAÎNEMENT
 # ==============================================================================
 
 def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, R_norm, R_prime_norm):
@@ -123,7 +125,7 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     # Perte L_ini
     L_ini = torch.mean(torch.square(P_from_G(model(X_ini_batch), X_ini_batch))) if X_ini_batch.shape[0] > 0 else torch.tensor(0.0)
 
-    # Perte L_solide (CORRECTION TECHNIQUE)
+    # Perte L_solide
     X_solid_boundary_batch = torch.cat([torch.full_like(t_boundary_batch, R_norm), t_boundary_batch], dim=1)
     L_solide = torch.mean(torch.square(model(X_solid_boundary_batch) - S_f(t_boundary_batch)))
 
@@ -133,7 +135,7 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     dP_dr = torch.autograd.grad(P_grad, X_grad_batch, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
     L_gradient_nul = torch.mean(torch.square(dP_dr))
 
-    # Pondération MANUELLE agressive pour prioriser les données (CORRECTION LOGIQUE)
+    # Pondération MANUELLE agressive pour prioriser les données
     w_data = 100.0
     w_phys = 1.0
     
@@ -164,7 +166,7 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     L_yz = torch.mean(torch.square(G_pred_at_R_prime - G_target_from_data))
     L_ini = torch.mean(torch.square(P_from_G(model(X_ini), X_ini)))
     
-    # Perte L_solide (CORRECTION TECHNIQUE)
+    # Perte L_solide
     X_solid_boundary = torch.cat([torch.full_like(t_boundary, R_norm), t_boundary], dim=1)
     L_solide = torch.mean(torch.square(model(X_solid_boundary) - S_f(t_boundary)))
 
@@ -174,7 +176,7 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     dP_dr = torch.autograd.grad(P_grad, X_grad_total, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
     L_gradient_nul = torch.mean(torch.square(dP_dr))
 
-    # Pondération MANUELLE agressive (CORRECTION LOGIQUE)
+    # Pondération MANUELLE agressive
     w_data = 100.0
     w_phys = 1.0
     
@@ -187,8 +189,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     torch.manual_seed(1234)
     batch_size = params_pinns["batch_size"]
     R_m, R_prime_m = params["R_vrai_m"], params["R_prime_m"]
-    R_norm, D_solid_norm, ordre_R = normalisation(R_m, params["D_f"])
-    R_prime_norm, D_liquid_norm, _ = normalisation(R_prime_m, params["D_j"])
+    R_norm, D_solid_norm, R_prime_norm, D_liquid_norm, ordre_R = normalisation(R_m, params["D_f"], R_prime_m, params["D_j"])
     params["ordre_R"] = ordre_R
 
     model = Physics_informed_nn(params_pinns["nb_hidden_layer"], params_pinns["nb_hidden_perceptron"], R_norm, params["P0_j"])
@@ -288,7 +289,8 @@ def affichage(path: Path):
     with open(data_dir / "S_j.pkl", "rb") as f: S_j = pickle.load(f)
     
     R_m, R_prime_m = params["R_vrai_m"], params["R_prime_m"]
-    R_norm, _, ordre_R = normalisation(R_m, params["D_f"])
+    R_norm, D_solid_norm, R_prime_norm, D_liquid_norm, ordre_R = normalisation(R_m, params["D_f"], R_prime_m, params["D_j"])
+    #R_norm, _, ordre_R = normalisation(R_m, params["D_f"])
     
     model = Physics_informed_nn(params_pinns["nb_hidden_layer"], params_pinns["nb_hidden_perceptron"], R_norm, coeff_normal)
     model.load_state_dict(torch.load(data_dir / "model.pth"))
@@ -311,7 +313,7 @@ def affichage(path: Path):
     ax1.plot(t_plot.numpy(), G_pred_at_R.detach().numpy() * coeff_normal, 'b-', label='G(R, t) Prédit (Modèle)')
     ax1.set_title('Validation de la polarisation moyenne du solide'); ax1.set_xlabel('Temps (s)'); ax1.set_ylabel('Polarisation'); ax1.legend(); ax1.grid(True)
 
-    R_prime_norm, _, _ = normalisation(R_prime_m, params["D_j"])
+    #R_prime_norm, _, _ = normalisation(R_prime_m, params["D_j"])
     X_boundary = torch.cat([torch.full_like(t_plot, R_prime_norm), t_plot], dim=1)
     G_pred_at_R_prime = model(X_boundary)
     vol_frac_solid = (R_norm**3) / (R_prime_norm**3)
@@ -348,7 +350,15 @@ if __name__ == "__main__":
     parser.add_argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine des résultats.")
     parser.add_argument('--case_name', type=str, required=True, help="Le nom du cas à traiter.")
     
-    args = parser.parse_args()
+    try:       
+        args = parser.parse_args()
+        data_file = Path(args.data_file)
+        base_output = Path(args.output_dir)
+        case_name = args.case_name
+    except:
+        data_file = Path("polpinn/donnees.pkl")
+        base_output = Path("output")
+        case_name = "11_58_40_75"
     
     params_pinns = {
         "nb_hidden_layer": 2, 
@@ -359,18 +369,15 @@ if __name__ == "__main__":
         "batch_size": 256,
     }
 
-    data_file = Path(args.data_file)
-    base_output = Path(args.output_dir)
-
-    print(f"--- Lancement du cas 'Corrigé': {args.case_name} ---")
+    print(f"--- Lancement du cas 'Corrigé': {case_name} ---")
     with open(data_file, "rb") as f: all_data = pickle.load(f)
 
-    if args.case_name not in all_data:
-        print(f"ERREUR: Cas '{args.case_name}' non trouvé."); sys.exit()
+    if case_name not in all_data:
+        print(f"ERREUR: Cas '{case_name}' non trouvé."); sys.exit()
 
-    exp_data = all_data[args.case_name]
+    exp_data = all_data[case_name]
     solid_data_key, solvent_data_key = "CrisOn", "JuiceOn"
-    output_path = base_output / f"{args.case_name}_On_corrected_result"
+    output_path = base_output / f"{case_name}_On_corrected_result"
     
     if output_path.exists(): shutil.rmtree(output_path)
     (output_path / "Data").mkdir(parents=True, exist_ok=True)
@@ -386,7 +393,7 @@ if __name__ == "__main__":
         "P0_f": exp_data[solid_data_key]["P0_j"], 
         "P0_j": exp_data[solvent_data_key]["P0_j"],
         "def_t": max(exp_data[solid_data_key]["t"]),
-        "name": f"{args.case_name}_On_corrected", 
+        "name": f"{case_name}_On_corrected", 
         "R_vrai_m": R_vrai_m, 
         "R_prime_m": R_vrai_m * 5.0,
     }
@@ -402,4 +409,4 @@ if __name__ == "__main__":
     with open(output_path / "Data" / "S_j.pkl", "wb") as f: pickle.dump(S_j, f)
     affichage(output_path)
 
-    print(f"\n=== FIN DE L'EXPÉRIENCE 'CORRIGÉE' POUR {args.case_name} ===")
+    print(f"\n=== FIN DE L'EXPÉRIENCE 'CORRIGÉE' POUR {case_name} ===")
