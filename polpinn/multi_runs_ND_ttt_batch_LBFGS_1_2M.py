@@ -226,7 +226,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
 
     print("\n--- Phase 1: Adam Optimizer avec Mini-Batching ---")
     optimizer = optim.Adam(model.parameters(), lr=params_pinns['lr'])
-    epochs_phase1 = 9000
+    epochs_phase1 = 80000
     for it in tqdm(range(epochs_phase1), desc="Phase 1 (Adam)", file=sys.stdout):
         fick_indices = torch.randint(0, X_fick_total.shape[0], (batch_size // 3,))
         data_indices = torch.randint(0, X_data_total.shape[0], (batch_size // 3,))
@@ -248,7 +248,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
 
     print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch ---")
     optimizer = optim.LBFGS(model.parameters(), lr=1.0, max_iter=10, max_eval=20, history_size=150)
-    epochs_phase2 = 100
+    epochs_phase2 = 500
     for it in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)", file=sys.stdout):
         def closure():
             optimizer.zero_grad()
@@ -361,7 +361,7 @@ if __name__ == "__main__":
         case_name = "11_58_40_75"
     
     params_pinns = {
-        "nb_hidden_layer": 2,
+        "nb_hidden_layer": 4,
         "nb_hidden_perceptron": 32, 
         "lr": 0.001,
         "epoch": 5000, 
