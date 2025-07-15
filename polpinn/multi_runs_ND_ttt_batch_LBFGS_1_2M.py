@@ -385,11 +385,17 @@ if __name__ == "__main__":
     
     R_vrai_m = exp_data["R_s"] * 1.0e-9
     
+        # --- CALCUL DES PARAMÈTRES PHYSIQUES ---
+    C_ref, D_ref_nm2_s = 60.0, 500.0
+    D_ref_m2_s = D_ref_nm2_s * 1e-18
+    C_f, C_j = exp_data.get("C_f", C_ref), exp_data.get("C_j", C_ref)
+    D_f_calculated = D_ref_m2_s * ((C_f / C_ref) ** (1/3))
+    D_j_calculated = D_ref_m2_s * ((C_j / C_ref) ** (1/3))
     params = {
-        "D_f": exp_data.get("D_f", 500e-18), 
-        "D_j": exp_data.get("D_j", 500e-18),
-        "T_1_f": exp_data.get("T_1_f", 20.0), 
-        "T_1_j": exp_data.get("T_1_j", 20.0),
+        "D_f": D_f_calculated, 
+        "D_j": D_j_calculated,
+        "T_1_f": exp_data.get("T_1_f", 300.0), 
+        "T_1_j": exp_data.get("T_1_j", 3.0),
         "P0_f": exp_data[solid_data_key]["P0_j"], 
         "P0_j": exp_data[solvent_data_key]["P0_j"],
         "def_t": max(exp_data[solid_data_key]["t"]),
