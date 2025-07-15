@@ -396,7 +396,7 @@ if __name__ == "__main__":
         "D_j": D_j_calculated,
         "T_1_f": exp_data.get("T_1_f", 300.0), 
         "T_1_j": exp_data.get("T_1_j", 3.0),
-        "P0_f": exp_data[solid_data_key]["P0_j"], 
+        "P0_f": 1.0, 
         "P0_j": exp_data[solvent_data_key]["P0_j"],
         "def_t": max(exp_data[solid_data_key]["t"]),
         "name": f"{case_name}_On_corrected", 
