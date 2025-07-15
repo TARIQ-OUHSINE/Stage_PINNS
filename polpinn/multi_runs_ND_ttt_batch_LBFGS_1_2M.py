@@ -361,7 +361,7 @@ if __name__ == "__main__":
         case_name = "11_58_40_75"
     
     params_pinns = {
-        "nb_hidden_layer": 4,
+        "nb_hidden_layer": 2,
         "nb_hidden_perceptron": 32, 
         "lr": 0.001,
         "epoch": 5000, 
@@ -395,7 +395,7 @@ if __name__ == "__main__":
         "D_f": D_f_calculated, 
         "D_j": D_j_calculated,
         "T_1_f": exp_data.get("T_1_f", 300.0), 
-        "T_1_j": exp_data.get("T_1_j", 3.0),
+        "T_1_j": exp_data[solid_data_key]["TB_j"], #exp_data.get("T_1_j", 3.0),
         "P0_f": 1.0, 
         "P0_j": exp_data[solvent_data_key]["P0_j"],
         "def_t": max(exp_data[solid_data_key]["t"]),
