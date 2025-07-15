@@ -361,7 +361,7 @@ if __name__ == "__main__":
         case_name = "11_58_40_75"
     
     params_pinns = {
-        "nb_hidden_layer": 2, 
+        "nb_hidden_layer": 4, 
         "nb_hidden_perceptron": 32, 
         "lr": 0.001,
         "epoch": 5000, 
