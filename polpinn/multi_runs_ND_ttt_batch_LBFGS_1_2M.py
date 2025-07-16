@@ -198,7 +198,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     
     print(f"Création du DataSet enrichi...")
     def_t = params["def_t"]
-    nb_r, nb_t = 500, 500
+    nb_r, nb_t = 1000, 1000
     
     X_r_f_total = torch.linspace(0, R_prime_norm, nb_r).view(-1, 1)
     X_t_f_total = torch.linspace(0, def_t, nb_t).view(-1, 1)
@@ -226,7 +226,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
 
     print("\n--- Phase 1: Adam Optimizer avec Mini-Batching ---")
     optimizer = optim.Adam(model.parameters(), lr=params_pinns['lr'])
-    epochs_phase1 = 80000
+    epochs_phase1 = 8000
     for it in tqdm(range(epochs_phase1), desc="Phase 1 (Adam)", file=sys.stdout):
         fick_indices = torch.randint(0, X_fick_total.shape[0], (batch_size // 3,))
         data_indices = torch.randint(0, X_data_total.shape[0], (batch_size // 3,))
@@ -248,7 +248,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
 
     print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch ---")
     optimizer = optim.LBFGS(model.parameters(), lr=1.0, max_iter=10, max_eval=20, history_size=150)
-    epochs_phase2 = 500
+    epochs_phase2 = 100
     for it in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)", file=sys.stdout):
         def closure():
             optimizer.zero_grad()
