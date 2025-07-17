@@ -177,7 +177,7 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     L_gradient_nul = torch.mean(torch.square(dP_dr))
 
     # Pondération MANUELLE agressive
-    w_data = 1.0
+    w_data = 10.0
     w_phys = 1.0
     
     total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + (w_phys * L_fick_s) + (w_phys * L_fick_l)
@@ -396,7 +396,7 @@ if __name__ == "__main__":
         "D_j": D_j_calculated,
         "T_1_f": exp_data.get("T_1_f", 300.0), 
         "T_1_j": exp_data[solid_data_key]["TB_j"], #exp_data.get("T_1_j", 3.0),
-        "P0_f": 1.0, 
+        "P0_f": 100.0, 
         "P0_j": exp_data[solvent_data_key]["P0_j"],
         "def_t": max(exp_data[solid_data_key]["t"]),
         "name": f"{case_name}_On_corrected", 
