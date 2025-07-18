@@ -247,7 +247,11 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
                 model_opti = copy.deepcopy(model)
 
     print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch ---")
-    optimizer = optim.LBFGS(model.parameters(), lr=1.0, max_iter=10, max_eval=20, history_size=150)
+    optimizer = optim.LBFGS(model.parameters(), lr=1.0, max_iter=10, max_eval=20, 
+                        history_size=150, 
+                        tolerance_grad=1e-7, 
+                        tolerance_change=1e-9, 
+                        line_search_fn="strong_wolfe")
     epochs_phase2 = 100
     for it in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)", file=sys.stdout):
         def closure():
