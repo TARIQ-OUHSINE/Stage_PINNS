@@ -229,12 +229,8 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     model_opti = copy.deepcopy(model)
     min_loss_val = float('inf')
 
-    # ==============================================================================
-    #                             PHASE 1: ADAM (INCHANGÉE)
-    # ==============================================================================
     print("\n--- Phase 1: Adam Optimizer ---")
     optimizer_adam = optim.Adam(model.parameters(), lr=params_pinns['lr'])
-    # Le nombre d'époques pour Adam est souvent plus élevé
     epochs_phase1 = 8000
     for it in tqdm(range(epochs_phase1), desc="Phase 1 (Adam)", file=sys.stdout):
         fick_indices = torch.randint(0, X_fick_total.shape[0], (batch_size // 3,))
@@ -245,14 +241,16 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
         X_grad_batch = X_grad_total[grad_indices]
         
         optimizer_adam.zero_grad()
-        L, L_list = cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, R_norm, R_prime_norm)
+        L, _ = cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, R_norm, R_prime_norm)
         L.backward()
         optimizer_adam.step()
         
         if it % 10 == 0:
-            # On utilise une fonction de coût en full batch pour évaluer la vraie perte
-            with torch.no_grad():
-                _, L_list_eval = cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, R_norm, R_prime_norm)
+            # ========================= CORRECTION ICI =========================
+            # On retire le bloc "with torch.no_grad():"
+            # car cost_enhanced_full_batch a besoin de calculer des gradients internes.
+            _, L_list_eval = cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, R_norm, R_prime_norm)
+            # ================================================================
             
             for i in range(len(L_list_eval)): loss[i].append(L_list_eval[i])
             
@@ -262,27 +260,21 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
 
     print(f"\nFin de la phase Adam. Meilleure perte (sum): {min_loss_val:.2e}")
 
-    # ==============================================================================
-    #                   PHASE 2: L-BFGS (MODIFIÉE SELON VOTRE EXEMPLE)
-    # ==============================================================================
     print("\n--- Phase 2: L-BFGS Optimizer ---")
     
-    # Utilisation du modèle le plus performant de la phase Adam
     model = copy.deepcopy(model_opti) 
 
     optimizer_lbfgs = optim.LBFGS(
         model.parameters(),
-        max_iter=5000,          # Nombre maximal d'itérations gérées par L-BFGS
-        max_eval=5000,          # Nombre maximal d'évaluations de la fonction de coût
-        tolerance_grad=1e-8,    # Tolérance sur le gradient pour l'arrêt
-        tolerance_change=1.0 * np.finfo(float).eps, # Tolérance sur le changement des paramètres
-        history_size=100,       # Taille de l'historique pour L-BFGS
-        line_search_fn="strong_wolfe" # Algorithme de recherche de ligne robuste
+        max_iter=5000,
+        max_eval=5000,
+        tolerance_grad=1e-8,
+        tolerance_change=1.0 * np.finfo(float).eps,
+        history_size=100,
+        line_search_fn="strong_wolfe"
     )
 
-    # La fonction `closure` est appelée de manière répétée par L-BFGS
-    # jusqu'à ce que la convergence soit atteinte.
-    lbfgs_iter = [0] # Utilisation d'une liste pour un compteur mutable dans le closure
+    lbfgs_iter = [0]
     def closure():
         optimizer_lbfgs.zero_grad()
         L, L_list = cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, R_norm, R_prime_norm)
@@ -293,7 +285,6 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
             min_loss_val = L_list[0]
             model_opti = copy.deepcopy(model)
 
-        # Enregistrer la perte à chaque évaluation de L-BFGS
         for i in range(len(L_list)): 
             loss[i].append(L_list[i])
 
@@ -303,12 +294,10 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
         
         return L
 
-    # Appel UNIQUE à optimizer.step(). L'optimiseur gère la boucle d'itérations.
     print("Lancement de l'optimisation L-BFGS... (cela peut prendre du temps)")
     optimizer_lbfgs.step(closure)
 
     print(f"\nEntraînement terminé. Meilleure perte finale (sum): {min_loss_val:.2e}")
-    # On retourne le meilleur modèle trouvé sur l'ensemble des deux phases
     return model_opti, loss
 
 # ==============================================================================
