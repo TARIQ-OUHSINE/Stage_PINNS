@@ -1,6 +1,7 @@
 # ==============================================================================
 #           SCRIPT UNIQUE - VERSION CORRIGÉE ET VÉRIFIÉE
 #               Correction du graphe de calcul et pondération manuelle
+#               + AJOUT DE LA CONTRAINTE DE MONOTONICITÉ dP/dr >= 0
 # ==============================================================================
 
 import sys
@@ -11,6 +12,7 @@ import pickle
 import pandas as pd
 from pathlib import Path
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 from scipy.optimize import minimize
@@ -97,7 +99,7 @@ class DataAugmentation:
         return result.x, result.fun
 
 # ==============================================================================
-# SECTION 2: MOTEUR D'ENTRAÎNEMENT
+# SECTION 2: MOTEUR D'ENTRAÎNEMENT (MODIFIÉ)
 # ==============================================================================
 
 def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, R_norm, R_prime_norm):
@@ -131,17 +133,25 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
 
     # Perte L_gradient_nul
     X_grad_batch.requires_grad_(True)
-    P_grad = P_from_G(model(X_grad_batch), X_grad_batch)
-    dP_dr = torch.autograd.grad(P_grad, X_grad_batch, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
-    L_gradient_nul = torch.mean(torch.square(dP_dr))
+    P_grad_nul = P_from_G(model(X_grad_batch), X_grad_batch)
+    dP_dr_nul = torch.autograd.grad(P_grad_nul, X_grad_batch, grad_outputs=torch.ones_like(P_grad_nul), create_graph=True)[0][:, 0]
+    L_gradient_nul = torch.mean(torch.square(dP_dr_nul))
+
+    # === NOUVEAU TERME DE PERTE: Contrainte de monotonicité dP/dr >= 0 ===
+    P_mono = P_from_G(model(X_fick_batch), X_fick_batch)
+    dP_dr_mono = torch.autograd.grad(P_mono, X_fick_batch, grad_outputs=torch.ones_like(P_mono), create_graph=True)[0][:, 0]
+    L_monotonicity_r = torch.mean(torch.square(F.relu(-dP_dr_mono))) # Pénalise les valeurs négatives
 
     # Pondération MANUELLE agressive pour prioriser les données
     w_data = 100.0
-    w_phys = 1.0
+    w_phys = 10.0
+    w_mono = 10.0 
     
-    total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + (w_phys * L_fick_s) + (w_phys * L_fick_l)
+    total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + \
+                 (w_phys * L_fick_s) + (w_phys * L_fick_l) + (w_mono * L_monotonicity_r)
     
-    loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), L_solide.item(), L_gradient_nul.item()]
+    loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
+                       L_solide.item(), L_gradient_nul.item(), L_monotonicity_r.item()]
     return total_loss, loss_components
 
 def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, R_norm, R_prime_norm):
@@ -172,17 +182,25 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
 
     # Perte L_gradient_nul
     X_grad_total.requires_grad_(True)
-    P_grad = P_from_G(model(X_grad_total), X_grad_total)
-    dP_dr = torch.autograd.grad(P_grad, X_grad_total, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
-    L_gradient_nul = torch.mean(torch.square(dP_dr))
+    P_grad_nul = P_from_G(model(X_grad_total), X_grad_total)
+    dP_dr_nul = torch.autograd.grad(P_grad_nul, X_grad_total, grad_outputs=torch.ones_like(P_grad_nul), create_graph=True)[0][:, 0]
+    L_gradient_nul = torch.mean(torch.square(dP_dr_nul))
+
+    # === NOUVEAU TERME DE PERTE: Contrainte de monotonicité dP/dr >= 0 ===
+    P_mono = P_from_G(model(X_fick_total), X_fick_total)
+    dP_dr_mono = torch.autograd.grad(P_mono, X_fick_total, grad_outputs=torch.ones_like(P_mono), create_graph=True)[0][:, 0]
+    L_monotonicity_r = torch.mean(torch.square(F.relu(-dP_dr_mono))) # Pénalise les valeurs négatives
 
     # Pondération MANUELLE agressive
     w_data = 1.0
-    w_phys = 100.0
+    w_phys = 1.0
+    w_mono = 1.0 # Poids pour la nouvelle contrainte
     
-    total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + (w_phys * L_fick_s) + (w_phys * L_fick_l)
+    total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + \
+                 (w_phys * L_fick_s) + (w_phys * L_fick_l) + (w_mono * L_monotonicity_r)
 
-    loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), L_solide.item(), L_gradient_nul.item()]
+    loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
+                       L_solide.item(), L_gradient_nul.item(), L_monotonicity_r.item()]
     return total_loss, loss_components
 
 def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
@@ -220,7 +238,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     
     print(f"DataSet créé: {X_fick_total.shape[0]} Fick, {X_data_total.shape[0]} Données, {X_grad_total.shape[0]} Gradient.")
 
-    loss = [[] for _ in range(7)]
+    loss = [[] for _ in range(8)] # MODIFIÉ: 8 composantes de perte
     model_opti = copy.deepcopy(model)
     min_loss_val = float('inf')
 
@@ -271,7 +289,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     return model_opti, loss
 
 # ==============================================================================
-# SECTION 3: SAUVEGARDE ET VISUALISATION
+# SECTION 3: SAUVEGARDE ET VISUALISATION (MODIFIÉ)
 # ==============================================================================
 def save_results(model, loss_history, params_pinns, params, path):
     file_path = path / "Data"
@@ -294,16 +312,18 @@ def affichage(path: Path):
     
     R_m, R_prime_m = params["R_vrai_m"], params["R_prime_m"]
     R_norm, D_solid_norm, R_prime_norm, D_liquid_norm, ordre_R = normalisation(R_m, params["D_f"], R_prime_m, params["D_j"])
-    #R_norm, _, ordre_R = normalisation(R_m, params["D_f"])
     
     model = Physics_informed_nn(params_pinns["nb_hidden_layer"], params_pinns["nb_hidden_perceptron"], R_norm, coeff_normal)
     model.load_state_dict(torch.load(data_dir / "model.pth"))
     model.eval()
     
     fig, ax1 = plt.subplots(1, 1, figsize=(14, 7))
-    loss_names = ["Total Sum", "L_yz", "L_initial", "L_fick_solid", "L_fick_liquid", "L_solid", "L_gradient_nul"]
+    # MODIFIÉ: Ajout du nom de la nouvelle perte
+    loss_names = ["Total Sum", "L_yz", "L_initial", "L_fick_solid", "L_fick_liquid", "L_solid", "L_gradient_nul", "L_monotonicity_r"]
     for i, name in enumerate(loss_names):
-        ax1.plot(loss[i], label=name)
+        # Vérifier que l'historique de la perte existe avant de tracer
+        if i < len(loss):
+            ax1.plot(loss[i], label=name)
     ax1.set_yscale('log'); ax1.set_title('Evolution de la fonction de coût'); ax1.set_xlabel('Itérations (x10)'); ax1.set_ylabel('Coût (log)'); ax1.legend(); ax1.grid(True)
     fig.tight_layout(); fig.savefig(graph_dir / "loss_evolution.png"); plt.close(fig)
     
@@ -317,7 +337,6 @@ def affichage(path: Path):
     ax1.plot(t_plot.numpy(), G_pred_at_R.detach().numpy() * coeff_normal, 'b-', label='G(R, t) Prédit (Modèle)')
     ax1.set_title('Validation de la polarisation moyenne du solide'); ax1.set_xlabel('Temps (s)'); ax1.set_ylabel('Polarisation'); ax1.legend(); ax1.grid(True)
 
-    #R_prime_norm, _, _ = normalisation(R_prime_m, params["D_j"])
     X_boundary = torch.cat([torch.full_like(t_plot, R_prime_norm), t_plot], dim=1)
     G_pred_at_R_prime = model(X_boundary)
     vol_frac_solid = (R_norm**3) / (R_prime_norm**3)
