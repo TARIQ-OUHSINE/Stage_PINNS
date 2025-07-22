@@ -1,7 +1,6 @@
 # ==============================================================================
 #           SCRIPT UNIQUE - VERSION CORRIGÉE ET VÉRIFIÉE
-#               Correction du graphe de calcul et pondération manuelle
-#               + AJOUT DE LA CONTRAINTE DE MONOTONICITÉ dP/dr >= 0
+#               + AJOUT DE LA PERTE DE DONNÉES SUR LE SOLVANT (L_solvant)
 # ==============================================================================
 
 import sys
@@ -12,7 +11,6 @@ import pickle
 import pandas as pd
 from pathlib import Path
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 from scipy.optimize import minimize
@@ -118,40 +116,45 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     t_boundary_batch = X_boundary_batch[:, 1].view(-1, 1)
     X_ini_batch = X_data_batch[t_vals == 0]
 
-    # Perte L_yz
-    G_pred_at_R_prime = model(X_boundary_batch)
+    # Coordonnées des deux interfaces (solide et totale) pour le batch actuel
+    X_solid_boundary_batch = torch.cat([torch.full_like(t_boundary_batch, R_norm), t_boundary_batch], dim=1)
+    X_total_boundary_batch = torch.cat([torch.full_like(t_boundary_batch, R_prime_norm), t_boundary_batch], dim=1)
+
+    G_pred_at_R = model(X_solid_boundary_batch)
+    G_pred_at_R_prime = model(X_total_boundary_batch)
+
+    # Perte L_solide (Polarisation moyenne dans la sphère solide)
+    L_solide = torch.mean(torch.square(G_pred_at_R - S_f(t_boundary_batch)))
+
+    # Perte L_yz (Polarisation moyenne dans la sphère totale)
     vol_frac_solid = (R_norm**3) / (R_prime_norm**3)
     G_target_from_data = (1.0 - vol_frac_solid) * S_j(t_boundary_batch) + vol_frac_solid * S_f(t_boundary_batch)
     L_yz = torch.mean(torch.square(G_pred_at_R_prime - G_target_from_data))
+
+    # === NOUVEAU TERME DE PERTE: L_solvant (Polarisation moyenne dans la couronne du solvant) ===
+    vol_R3 = R_norm**3
+    vol_R_prime3 = R_prime_norm**3
+    G_pred_solvant = (G_pred_at_R_prime * vol_R_prime3 - G_pred_at_R * vol_R3) / (vol_R_prime3 - vol_R3)
+    L_solvant = torch.mean(torch.square(G_pred_solvant - S_j(t_boundary_batch)))
     
     # Perte L_ini
     L_ini = torch.mean(torch.square(P_from_G(model(X_ini_batch), X_ini_batch))) if X_ini_batch.shape[0] > 0 else torch.tensor(0.0)
 
-    # Perte L_solide
-    X_solid_boundary_batch = torch.cat([torch.full_like(t_boundary_batch, R_norm), t_boundary_batch], dim=1)
-    L_solide = torch.mean(torch.square(model(X_solid_boundary_batch) - S_f(t_boundary_batch)))
-
     # Perte L_gradient_nul
     X_grad_batch.requires_grad_(True)
-    P_grad_nul = P_from_G(model(X_grad_batch), X_grad_batch)
-    dP_dr_nul = torch.autograd.grad(P_grad_nul, X_grad_batch, grad_outputs=torch.ones_like(P_grad_nul), create_graph=True)[0][:, 0]
-    L_gradient_nul = torch.mean(torch.square(dP_dr_nul))
-
-    # === NOUVEAU TERME DE PERTE: Contrainte de monotonicité dP/dr >= 0 ===
-    P_mono = P_from_G(model(X_fick_batch), X_fick_batch)
-    dP_dr_mono = torch.autograd.grad(P_mono, X_fick_batch, grad_outputs=torch.ones_like(P_mono), create_graph=True)[0][:, 0]
-    L_monotonicity_r = torch.mean(torch.square(F.relu(-dP_dr_mono))) # Pénalise les valeurs négatives
+    P_grad = P_from_G(model(X_grad_batch), X_grad_batch)
+    dP_dr = torch.autograd.grad(P_grad, X_grad_batch, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
+    L_gradient_nul = torch.mean(torch.square(dP_dr))
 
     # Pondération MANUELLE agressive pour prioriser les données
     w_data = 100.0
-    w_phys = 10.0
-    w_mono = 10.0 
+    w_phys = 1.0
     
-    total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + \
-                 (w_phys * L_fick_s) + (w_phys * L_fick_l) + (w_mono * L_monotonicity_r)
+    total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_data * L_solvant) + \
+                 (w_phys * L_ini) + (w_phys * L_gradient_nul) + (w_phys * L_fick_s) + (w_phys * L_fick_l)
     
     loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
-                       L_solide.item(), L_gradient_nul.item(), L_monotonicity_r.item()]
+                       L_solide.item(), L_gradient_nul.item(), L_solvant.item()]
     return total_loss, loss_components
 
 def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, R_norm, R_prime_norm):
@@ -170,37 +173,45 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     t_boundary = X_boundary[:, 1].view(-1, 1)
     X_ini = X_data_total[t_vals == 0]
     
-    G_pred_at_R_prime = model(X_boundary)
+    # Coordonnées des deux interfaces (solide et totale)
+    X_solid_boundary = torch.cat([torch.full_like(t_boundary, R_norm), t_boundary], dim=1)
+    X_total_boundary = torch.cat([torch.full_like(t_boundary, R_prime_norm), t_boundary], dim=1)
+
+    G_pred_at_R = model(X_solid_boundary)
+    G_pred_at_R_prime = model(X_total_boundary)
+
+    # Perte L_solide
+    L_solide = torch.mean(torch.square(G_pred_at_R - S_f(t_boundary)))
+
+    # Perte L_yz
     vol_frac_solid = (R_norm**3) / (R_prime_norm**3)
     G_target_from_data = (1.0 - vol_frac_solid) * S_j(t_boundary) + vol_frac_solid * S_f(t_boundary)
     L_yz = torch.mean(torch.square(G_pred_at_R_prime - G_target_from_data))
+    
+    # === NOUVEAU TERME DE PERTE: L_solvant ===
+    vol_R3 = R_norm**3
+    vol_R_prime3 = R_prime_norm**3
+    G_pred_solvant = (G_pred_at_R_prime * vol_R_prime3 - G_pred_at_R * vol_R3) / (vol_R_prime3 - vol_R3)
+    L_solvant = torch.mean(torch.square(G_pred_solvant - S_j(t_boundary)))
+
+    # Perte L_ini
     L_ini = torch.mean(torch.square(P_from_G(model(X_ini), X_ini)))
     
-    # Perte L_solide
-    X_solid_boundary = torch.cat([torch.full_like(t_boundary, R_norm), t_boundary], dim=1)
-    L_solide = torch.mean(torch.square(model(X_solid_boundary) - S_f(t_boundary)))
-
     # Perte L_gradient_nul
     X_grad_total.requires_grad_(True)
-    P_grad_nul = P_from_G(model(X_grad_total), X_grad_total)
-    dP_dr_nul = torch.autograd.grad(P_grad_nul, X_grad_total, grad_outputs=torch.ones_like(P_grad_nul), create_graph=True)[0][:, 0]
-    L_gradient_nul = torch.mean(torch.square(dP_dr_nul))
-
-    # === NOUVEAU TERME DE PERTE: Contrainte de monotonicité dP/dr >= 0 ===
-    P_mono = P_from_G(model(X_fick_total), X_fick_total)
-    dP_dr_mono = torch.autograd.grad(P_mono, X_fick_total, grad_outputs=torch.ones_like(P_mono), create_graph=True)[0][:, 0]
-    L_monotonicity_r = torch.mean(torch.square(F.relu(-dP_dr_mono))) # Pénalise les valeurs négatives
+    P_grad = P_from_G(model(X_grad_total), X_grad_total)
+    dP_dr = torch.autograd.grad(P_grad, X_grad_total, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
+    L_gradient_nul = torch.mean(torch.square(dP_dr))
 
     # Pondération MANUELLE agressive
     w_data = 1.0
     w_phys = 1.0
-    w_mono = 1.0 # Poids pour la nouvelle contrainte
     
-    total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + \
-                 (w_phys * L_fick_s) + (w_phys * L_fick_l) + (w_mono * L_monotonicity_r)
+    total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_data * L_solvant) + \
+                 (w_phys * L_ini) + (w_phys * L_gradient_nul) + (w_phys * L_fick_s) + (w_phys * L_fick_l)
 
     loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
-                       L_solide.item(), L_gradient_nul.item(), L_monotonicity_r.item()]
+                       L_solide.item(), L_gradient_nul.item(), L_solvant.item()]
     return total_loss, loss_components
 
 def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
@@ -319,17 +330,18 @@ def affichage(path: Path):
     
     fig, ax1 = plt.subplots(1, 1, figsize=(14, 7))
     # MODIFIÉ: Ajout du nom de la nouvelle perte
-    loss_names = ["Total Sum", "L_yz", "L_initial", "L_fick_solid", "L_fick_liquid", "L_solid", "L_gradient_nul", "L_monotonicity_r"]
+    loss_names = ["Total Sum", "L_yz", "L_initial", "L_fick_solid", "L_fick_liquid", "L_solid", "L_gradient_nul", "L_solvant"]
     for i, name in enumerate(loss_names):
-        # Vérifier que l'historique de la perte existe avant de tracer
         if i < len(loss):
             ax1.plot(loss[i], label=name)
     ax1.set_yscale('log'); ax1.set_title('Evolution de la fonction de coût'); ax1.set_xlabel('Itérations (x10)'); ax1.set_ylabel('Coût (log)'); ax1.legend(); ax1.grid(True)
     fig.tight_layout(); fig.savefig(graph_dir / "loss_evolution.png"); plt.close(fig)
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
+    # MODIFIÉ: 3 graphiques au lieu de 2 pour visualiser toutes les pertes de données
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 7))
     t_plot = torch.linspace(0, params["def_t"], 200).view(-1, 1)
     
+    # Graphique 1: Validation sur le solide (L_solide)
     X_solid_boundary = torch.cat([torch.full_like(t_plot, R_norm), t_plot], dim=1)
     G_pred_at_R = model(X_solid_boundary)
     ax1.plot(t_plot.numpy(), S_f(t_plot).numpy() * coeff_normal, 'k--', label='S_f Cible (Données)')
@@ -337,13 +349,24 @@ def affichage(path: Path):
     ax1.plot(t_plot.numpy(), G_pred_at_R.detach().numpy() * coeff_normal, 'b-', label='G(R, t) Prédit (Modèle)')
     ax1.set_title('Validation de la polarisation moyenne du solide'); ax1.set_xlabel('Temps (s)'); ax1.set_ylabel('Polarisation'); ax1.legend(); ax1.grid(True)
 
-    X_boundary = torch.cat([torch.full_like(t_plot, R_prime_norm), t_plot], dim=1)
-    G_pred_at_R_prime = model(X_boundary)
+    # Graphique 2: Validation sur le solvant (L_solvant)
+    X_total_boundary = torch.cat([torch.full_like(t_plot, R_prime_norm), t_plot], dim=1)
+    G_pred_at_R_prime = model(X_total_boundary)
+    vol_R3 = R_norm**3
+    vol_R_prime3 = R_prime_norm**3
+    G_pred_solvant = (G_pred_at_R_prime.detach() * vol_R_prime3 - G_pred_at_R.detach() * vol_R3) / (vol_R_prime3 - vol_R3)
+    ax2.plot(t_plot.numpy(), S_j(t_plot).numpy() * coeff_normal, 'k--', label='S_j Cible (Données)')
+    ax2.plot(S_j.times, S_j.list_y_raw, 'go', markersize=4, label='S_j Brutes')
+    ax2.plot(t_plot.numpy(), G_pred_solvant.numpy() * coeff_normal, 'c-', label='G_solvant(t) Prédit (Modèle)')
+    ax2.set_title('Validation de la polarisation moyenne du solvant'); ax2.set_xlabel('Temps (s)'); ax2.legend(); ax2.grid(True)
+    
+    # Graphique 3: Validation sur le volume total (L_yz)
     vol_frac_solid = (R_norm**3) / (R_prime_norm**3)
     G_target_from_data = (1.0 - vol_frac_solid) * S_j(t_plot) + vol_frac_solid * S_f(t_plot)
-    ax2.plot(t_plot.numpy(), G_target_from_data.numpy() * coeff_normal, 'k--', label='G(R\', t) Cible')
-    ax2.plot(t_plot.numpy(), G_pred_at_R_prime.detach().numpy() * coeff_normal, 'b-', label='G(R\', t) Prédit')
-    ax2.set_title('Validation de la polarisation moyenne totale'); ax2.set_xlabel('Temps (s)'); ax2.legend(); ax2.grid(True)
+    ax3.plot(t_plot.numpy(), G_target_from_data.numpy() * coeff_normal, 'k--', label='G(R\', t) Cible')
+    ax3.plot(t_plot.numpy(), G_pred_at_R_prime.detach().numpy() * coeff_normal, 'b-', label='G(R\', t) Prédit')
+    ax3.set_title('Validation de la polarisation moyenne totale'); ax3.set_xlabel('Temps (s)'); ax3.legend(); ax3.grid(True)
+
     fig.tight_layout(); fig.savefig(graph_dir / "mean_polarization_fits.png"); plt.close(fig)
     
     r_range = torch.linspace(0, R_prime_m, 100)
