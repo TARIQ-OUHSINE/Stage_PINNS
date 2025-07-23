@@ -260,7 +260,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     
     print(f"DataSet créé: {X_fick_total.shape[0]} Fick, {X_data_total.shape[0]} Données, {X_grad_total.shape[0]} Gradient.")
 
-    loss = [[] for _ in range(9)] # MODIFIÉ: 9 composantes de perte
+    loss = [[] for _ in range(9)]
     model_opti = copy.deepcopy(model)
     min_loss_val = float('inf')
 
