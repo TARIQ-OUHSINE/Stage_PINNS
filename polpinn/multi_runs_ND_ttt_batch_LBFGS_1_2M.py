@@ -456,7 +456,7 @@ if __name__ == "__main__":
         "P0_f": 1.0, 
         "P0_j": exp_data[solvent_data_key]["P0_j"],
         "def_t": max(exp_data[solid_data_key]["t"]),
-        "name": f"{case_name}_On_corrected", 
+        "name": f"{case_name}_On", 
         "R_vrai_m": R_vrai_m, 
         "R_prime_m": R_vrai_m * 6.0,
     }
