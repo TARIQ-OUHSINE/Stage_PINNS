@@ -340,7 +340,6 @@ def affichage(path: Path):
     model.eval()
     
     fig, ax1 = plt.subplots(1, 1, figsize=(14, 7))
-    # MODIFIÉ: Ajout du nom des nouvelles pertes
     loss_names = ["Total Sum", "L_yz", "L_initial", "L_fick_solid", "L_fick_liquid", 
                   "L_solid", "L_gradient_nul", "L_solvant", "L_monotonicity_r"]
     for i, name in enumerate(loss_names):
