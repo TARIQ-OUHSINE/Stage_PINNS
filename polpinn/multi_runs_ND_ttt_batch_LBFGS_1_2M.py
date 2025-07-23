@@ -213,7 +213,7 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     L_monotonicity_r = torch.mean(torch.square(F.relu(-dP_dr_mono)))
 
     # Pondération MANUELLE
-    w_data = 1.0
+    w_data = 10.0
     w_phys = 1.0
     w_mono = 1.0
     
