@@ -442,7 +442,7 @@ if __name__ == "__main__":
     
     R_vrai_m = exp_data["R_s"] * 1.0e-9
     
-        # --- CALCUL DES PARAMÈTRES PHYSIQUES ---
+    # --- CALCUL DES PARAMÈTRES PHYSIQUES ---
     C_ref, D_ref_nm2_s = 60.0, 500.0
     D_ref_m2_s = D_ref_nm2_s * 1e-18
     C_f, C_j = exp_data.get("C_f", C_ref), exp_data.get("C_j", C_ref)
