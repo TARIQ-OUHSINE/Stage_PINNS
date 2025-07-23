@@ -311,7 +311,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     return model_opti, loss
 
 # ==============================================================================
-# SECTION 3: SAUVEGARDE ET VISUALISATION (MODIFIÉ)
+# SECTION 3: SAUVEGARDE ET VISUALISATION
 # ==============================================================================
 def save_results(model, loss_history, params_pinns, params, path):
     file_path = path / "Data"
