@@ -144,7 +144,7 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
 
     # Pondération MANUELLE agressive pour prioriser les données
     w_data = 100.0
-    w_phys = 1.0
+    w_phys = 10.0
     w_mono = 100.0 
     
     total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + \
@@ -193,7 +193,7 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
 
     # Pondération MANUELLE agressive
     w_data = 100.0
-    w_phys = 1.0
+    w_phys = 10.0
     w_mono = 100.0 
     
     total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + \
