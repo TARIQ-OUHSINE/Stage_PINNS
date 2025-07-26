@@ -216,7 +216,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     
     print(f"Création du DataSet enrichi...")
     def_t = params["def_t"]
-    nb_r, nb_t = 500, 500
+    nb_r, nb_t = 1000, 1000
     
     X_r_f_total = torch.linspace(0, R_prime_norm, nb_r).view(-1, 1)
     X_t_f_total = torch.linspace(0, def_t, nb_t).view(-1, 1)
