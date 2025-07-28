@@ -1,7 +1,6 @@
 # ==============================================================================
 #           SCRIPT UNIQUE - VERSION CORRIGÉE ET VÉRIFIÉE
-#               Correction du graphe de calcul et pondération manuelle
-#               + AJOUT DE LA CONTRAINTE DE MONOTONICITÉ dP/dr >= 0
+#               + AJOUT DE LA CONTINUITÉ DU FLUX À L'INTERFACE
 # ==============================================================================
 
 import sys
@@ -12,7 +11,6 @@ import pickle
 import pandas as pd
 from pathlib import Path
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 from scipy.optimize import minimize
@@ -102,7 +100,7 @@ class DataAugmentation:
 # SECTION 2: MOTEUR D'ENTRAÎNEMENT (MODIFIÉ)
 # ==============================================================================
 
-def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, R_norm, R_prime_norm):
+def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, X_interface_batch, R_norm, R_prime_norm, D_solid_norm, D_liquid_norm):
     # --- Pertes de Physique (Fick) ---
     X_fick_batch.requires_grad_(True)
     r_fick = X_fick_batch[:, 0]
@@ -118,43 +116,42 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     t_boundary_batch = X_boundary_batch[:, 1].view(-1, 1)
     X_ini_batch = X_data_batch[t_vals == 0]
 
-    # Perte L_yz
     G_pred_at_R_prime = model(X_boundary_batch)
     vol_frac_solid = (R_norm**3) / (R_prime_norm**3)
     G_target_from_data = (1.0 - vol_frac_solid) * S_j(t_boundary_batch) + vol_frac_solid * S_f(t_boundary_batch)
     L_yz = torch.mean(torch.square(G_pred_at_R_prime - G_target_from_data))
     
-    # Perte L_ini
     L_ini = torch.mean(torch.square(P_from_G(model(X_ini_batch), X_ini_batch))) if X_ini_batch.shape[0] > 0 else torch.tensor(0.0)
 
-    # Perte L_solide
     X_solid_boundary_batch = torch.cat([torch.full_like(t_boundary_batch, R_norm), t_boundary_batch], dim=1)
     L_solide = torch.mean(torch.square(model(X_solid_boundary_batch) - S_f(t_boundary_batch)))
 
-    # Perte L_gradient_nul
     X_grad_batch.requires_grad_(True)
-    P_grad_nul = P_from_G(model(X_grad_batch), X_grad_batch)
-    dP_dr_nul = torch.autograd.grad(P_grad_nul, X_grad_batch, grad_outputs=torch.ones_like(P_grad_nul), create_graph=True)[0][:, 0]
-    L_gradient_nul = torch.mean(torch.square(dP_dr_nul))
+    P_grad = P_from_G(model(X_grad_batch), X_grad_batch)
+    dP_dr = torch.autograd.grad(P_grad, X_grad_batch, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
+    L_gradient_nul = torch.mean(torch.square(dP_dr))
 
-    # === NOUVEAU TERME DE PERTE: Contrainte de monotonicité dP/dr >= 0 ===
-    P_mono = P_from_G(model(X_fick_batch), X_fick_batch)
-    dP_dr_mono = torch.autograd.grad(P_mono, X_fick_batch, grad_outputs=torch.ones_like(P_mono), create_graph=True)[0][:, 0]
-    L_monotonicity_r = torch.mean(torch.square(F.relu(-dP_dr_mono))) # Pénalise les valeurs négatives
-
-    # Pondération MANUELLE agressive pour prioriser les données
-    w_data = 100.0
-    w_phys = 10.0
-    w_mono = 100.0 
+    # === NOUVEAU TERME DE PERTE: Continuité du Flux à r=R ===
+    X_interface_batch.requires_grad_(True)
+    P_interface = P_from_G(model(X_interface_batch), X_interface_batch)
+    dP_dr_interface = torch.autograd.grad(P_interface, X_interface_batch, grad_outputs=torch.ones_like(P_interface), create_graph=True)[0][:, 0].view(-1, 1)
+    # Comme le modèle est lisse, dP/dr est continu. La condition D_f*dP/dr = D_j*dP/dr devient (D_f-D_j)*dP/dr = 0
+    # Cela force dP/dr à 0 si D_f != D_j.
+    L_flux_continuity = torch.mean(torch.square((D_solid_norm - D_liquid_norm) * dP_dr_interface))
     
+    # Pondération MANUELLE
+    w_data = 100.0
+    w_phys = 1.0
+    w_flux = 10.0 # Poids pour la condition d'interface
+
     total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + \
-                 (w_phys * L_fick_s) + (w_phys * L_fick_l) + (w_mono * L_monotonicity_r)
+                 (w_phys * L_fick_s) + (w_phys * L_fick_l) + (w_flux * L_flux_continuity)
     
     loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
-                       L_solide.item(), L_gradient_nul.item(), L_monotonicity_r.item()]
+                       L_solide.item(), L_gradient_nul.item(), L_flux_continuity.item()]
     return total_loss, loss_components
 
-def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, R_norm, R_prime_norm):
+def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, X_interface_total, R_norm, R_prime_norm, D_solid_norm, D_liquid_norm):
     # Pertes Fick
     X_fick_total.requires_grad_(True)
     r_fick = X_fick_total[:, 0]
@@ -176,31 +173,30 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     L_yz = torch.mean(torch.square(G_pred_at_R_prime - G_target_from_data))
     L_ini = torch.mean(torch.square(P_from_G(model(X_ini), X_ini)))
     
-    # Perte L_solide
     X_solid_boundary = torch.cat([torch.full_like(t_boundary, R_norm), t_boundary], dim=1)
     L_solide = torch.mean(torch.square(model(X_solid_boundary) - S_f(t_boundary)))
 
-    # Perte L_gradient_nul
     X_grad_total.requires_grad_(True)
-    P_grad_nul = P_from_G(model(X_grad_total), X_grad_total)
-    dP_dr_nul = torch.autograd.grad(P_grad_nul, X_grad_total, grad_outputs=torch.ones_like(P_grad_nul), create_graph=True)[0][:, 0]
-    L_gradient_nul = torch.mean(torch.square(dP_dr_nul))
+    P_grad = P_from_G(model(X_grad_total), X_grad_total)
+    dP_dr = torch.autograd.grad(P_grad, X_grad_total, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
+    L_gradient_nul = torch.mean(torch.square(dP_dr))
+    
+    # === NOUVEAU TERME DE PERTE: Continuité du Flux à r=R ===
+    X_interface_total.requires_grad_(True)
+    P_interface = P_from_G(model(X_interface_total), X_interface_total)
+    dP_dr_interface = torch.autograd.grad(P_interface, X_interface_total, grad_outputs=torch.ones_like(P_interface), create_graph=True)[0][:, 0].view(-1, 1)
+    L_flux_continuity = torch.mean(torch.square((D_solid_norm - D_liquid_norm) * dP_dr_interface))
 
-    # === NOUVEAU TERME DE PERTE: Contrainte de monotonicité dP/dr >= 0 ===
-    P_mono = P_from_G(model(X_fick_total), X_fick_total)
-    dP_dr_mono = torch.autograd.grad(P_mono, X_fick_total, grad_outputs=torch.ones_like(P_mono), create_graph=True)[0][:, 0]
-    L_monotonicity_r = torch.mean(torch.square(F.relu(-dP_dr_mono))) # Pénalise les valeurs négatives
-
-    # Pondération MANUELLE agressive
-    w_data = 100.0
-    w_phys = 10.0
-    w_mono = 100.0 
+    # Pondération MANUELLE
+    w_data = 1.0
+    w_phys = 1.0
+    w_flux = 1.0
     
     total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + \
-                 (w_phys * L_fick_s) + (w_phys * L_fick_l) + (w_mono * L_monotonicity_r)
+                 (w_phys * L_fick_s) + (w_phys * L_fick_l) + (w_flux * L_flux_continuity)
 
     loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
-                       L_solide.item(), L_gradient_nul.item(), L_monotonicity_r.item()]
+                       L_solide.item(), L_gradient_nul.item(), L_flux_continuity.item()]
     return total_loss, loss_components
 
 def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
@@ -216,7 +212,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     
     print(f"Création du DataSet enrichi...")
     def_t = params["def_t"]
-    nb_r, nb_t = 1000, 1000
+    nb_r, nb_t = 500, 500
     
     X_r_f_total = torch.linspace(0, R_prime_norm, nb_r).view(-1, 1)
     X_t_f_total = torch.linspace(0, def_t, nb_t).view(-1, 1)
@@ -236,7 +232,12 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     X_r_prime_grad = torch.full_like(X_t_grad, R_prime_norm)
     X_grad_total = torch.cat([torch.cat([X_r0_grad, X_t_grad], dim=1), torch.cat([X_r_prime_grad, X_t_grad], dim=1)], dim=0)
     
-    print(f"DataSet créé: {X_fick_total.shape[0]} Fick, {X_data_total.shape[0]} Données, {X_grad_total.shape[0]} Gradient.")
+    # === NOUVEAU TENSEUR: Points de collocation pour l'interface ===
+    X_t_interface = torch.linspace(0, def_t, nb_t).view(-1, 1)
+    X_r_interface = torch.full_like(X_t_interface, R_norm)
+    X_interface_total = torch.cat([X_r_interface, X_t_interface], dim=1)
+
+    print(f"DataSet créé: {X_fick_total.shape[0]} Fick, {X_data_total.shape[0]} Données, {X_grad_total.shape[0]} Gradient, {X_interface_total.shape[0]} Interface.")
 
     loss = [[] for _ in range(8)] # MODIFIÉ: 8 composantes de perte
     model_opti = copy.deepcopy(model)
@@ -246,15 +247,20 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     optimizer = optim.Adam(model.parameters(), lr=params_pinns['lr'])
     epochs_phase1 = 8000
     for it in tqdm(range(epochs_phase1), desc="Phase 1 (Adam)", file=sys.stdout):
-        fick_indices = torch.randint(0, X_fick_total.shape[0], (batch_size // 3,))
-        data_indices = torch.randint(0, X_data_total.shape[0], (batch_size // 3,))
-        grad_indices = torch.randint(0, X_grad_total.shape[0], (batch_size // 3,))
+        # MODIFIÉ: Répartition des batches pour inclure les points d'interface
+        n = batch_size // 4
+        fick_indices = torch.randint(0, X_fick_total.shape[0], (n,))
+        data_indices = torch.randint(0, X_data_total.shape[0], (n,))
+        grad_indices = torch.randint(0, X_grad_total.shape[0], (n,))
+        interface_indices = torch.randint(0, X_interface_total.shape[0], (n,))
+
         X_fick_batch = X_fick_total[fick_indices]
         X_data_batch = X_data_total[data_indices]
         X_grad_batch = X_grad_total[grad_indices]
+        X_interface_batch = X_interface_total[interface_indices]
         
         optimizer.zero_grad()
-        L, L_list = cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, R_norm, R_prime_norm)
+        L, L_list = cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, X_interface_batch, R_norm, R_prime_norm, D_solid_norm, D_liquid_norm)
         L.backward()
         optimizer.step()
         
@@ -274,7 +280,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     for it in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)", file=sys.stdout):
         def closure():
             optimizer.zero_grad()
-            L, L_list = cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, R_norm, R_prime_norm)
+            L, L_list = cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, X_interface_total, R_norm, R_prime_norm, D_solid_norm, D_liquid_norm)
             L.backward()
             nonlocal min_loss_val, model_opti
             if L_list[0] < min_loss_val:
@@ -319,9 +325,8 @@ def affichage(path: Path):
     
     fig, ax1 = plt.subplots(1, 1, figsize=(14, 7))
     # MODIFIÉ: Ajout du nom de la nouvelle perte
-    loss_names = ["Total Sum", "L_yz", "L_initial", "L_fick_solid", "L_fick_liquid", "L_solid", "L_gradient_nul", "L_monotonicity_r"]
+    loss_names = ["Total Sum", "L_yz", "L_initial", "L_fick_solid", "L_fick_liquid", "L_solid", "L_gradient_nul", "L_flux_continuity"]
     for i, name in enumerate(loss_names):
-        # Vérifier que l'historique de la perte existe avant de tracer
         if i < len(loss):
             ax1.plot(loss[i], label=name)
     ax1.set_yscale('log'); ax1.set_title('Evolution de la fonction de coût'); ax1.set_xlabel('Itérations (x10)'); ax1.set_ylabel('Coût (log)'); ax1.legend(); ax1.grid(True)
