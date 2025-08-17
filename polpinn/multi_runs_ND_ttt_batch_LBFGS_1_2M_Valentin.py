@@ -155,8 +155,11 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     dP_dr_interface = torch.autograd.grad(P_interface, X_interface_batch, grad_outputs=torch.ones_like(P_interface), create_graph=True)[0][:, 0].view(-1, 1)
     L_flux_continuity = torch.mean(torch.square((D_solid_norm - D_liquid_norm) * dP_dr_interface))
     
-    # Pondération (tout à 1.0)
-    w_data, w_phys, w_flux, w_mono = 1.0, 1.0, 1.0, 1.0
+    # MODIFIÉ: Réintroduction des poids manuels pour prioriser les données
+    w_data = 100.0
+    w_phys = 1.0
+    w_flux = 10.0
+    w_mono = 10.0
 
     # Poids dynamiques pour Fick
     total_fick_points = X_fick_batch.shape[0]
@@ -221,8 +224,11 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     dP_dr_interface = torch.autograd.grad(P_interface, X_interface_total, grad_outputs=torch.ones_like(P_interface), create_graph=True)[0][:, 0].view(-1, 1)
     L_flux_continuity = torch.mean(torch.square((D_solid_norm - D_liquid_norm) * dP_dr_interface))
 
-    # Pondération (tout à 1.0)
-    w_data, w_phys, w_flux, w_mono = 1.0, 1.0, 1.0, 1.0
+    # MODIFIÉ: Réintroduction des poids manuels pour prioriser les données
+    w_data = 100.0
+    w_phys = 1.0
+    w_flux = 10.0
+    w_mono = 10.0
     
     # Poids dynamiques pour Fick
     total_fick_points = X_fick_total.shape[0]
