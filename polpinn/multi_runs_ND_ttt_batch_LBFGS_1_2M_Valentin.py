@@ -1,6 +1,6 @@
 # ==============================================================================
 #           SCRIPT UNIQUE - VERSION AVEC POIDS DYNAMIQUES
-#               + AJUSTEMENTS SUGGÉRÉS PAR L'ENCADRANT
+#               + AJOUT DE LA CONTRAINTE DE MONOTONICITÉ
 # ==============================================================================
 
 import sys
@@ -110,6 +110,11 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     L_fick_s = torch.mean(torch.square(F_solid(P_from_G(model(X_fick_solid), X_fick_solid), X_fick_solid))) if X_fick_solid.shape[0] > 0 else torch.tensor(0.0)
     L_fick_l = torch.mean(torch.square(F_liquid(P_from_G(model(X_fick_liquid), X_fick_liquid), X_fick_liquid))) if X_fick_liquid.shape[0] > 0 else torch.tensor(0.0)
     
+    # NOUVEAU: Perte de Monotonicité (∂P/∂r >= 0)
+    P_mono = P_from_G(model(X_fick_batch), X_fick_batch)
+    dP_dr_mono = torch.autograd.grad(P_mono, X_fick_batch, grad_outputs=torch.ones_like(P_mono), create_graph=True)[0][:, 0].view(-1, 1)
+    L_monotonicity = torch.mean(torch.square(torch.relu(-dP_dr_mono)))
+    
     # --- Pertes sur les Données et Conditions aux Limites ---
     X_data_batch.requires_grad_(True)
     t_vals = X_data_batch[:, 1]
@@ -138,15 +143,10 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     dP_dr_interface = torch.autograd.grad(P_interface, X_interface_batch, grad_outputs=torch.ones_like(P_interface), create_graph=True)[0][:, 0].view(-1, 1)
     L_flux_continuity = torch.mean(torch.square((D_solid_norm - D_liquid_norm) * dP_dr_interface))
     
-    # MODIFIÉ: Pondération désactivée (tout à 1.0)
-    w_data = 1.0
-    w_phys = 1.0
-    w_flux = 1.0
+    # Pondération (tout à 1.0)
+    w_data, w_phys, w_flux, w_mono = 1.0, 1.0, 1.0, 1.0
 
-    # NOUVEAU: Calcul des poids dynamiques pour la perte de Fick
-    # L'objectif est que chaque point de collocation (solide ou liquide) ait le même poids final dans la perte totale.
-    # On pondère la perte moyenne de chaque domaine par sa proportion dans le batch.
-    # Ainsi, sum_sq(solide)/N_total + sum_sq(liquide)/N_total
+    # Poids dynamiques pour la perte de Fick
     total_fick_points = X_fick_batch.shape[0]
     if total_fick_points > 0:
         w_fick_solid = X_fick_solid.shape[0] / total_fick_points
@@ -154,12 +154,12 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     else:
         w_fick_solid, w_fick_liquid = 0.0, 0.0
 
-    # MODIFIÉ: Application des poids dynamiques dans le calcul de la perte totale
     total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + \
-                 (w_phys * w_fick_solid * L_fick_s) + (w_phys * w_fick_liquid * L_fick_l) + (w_flux * L_flux_continuity)
+                 (w_phys * w_fick_solid * L_fick_s) + (w_phys * w_fick_liquid * L_fick_l) + \
+                 (w_flux * L_flux_continuity) + (w_mono * L_monotonicity)
     
     loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
-                       L_solide.item(), L_gradient_nul.item(), L_flux_continuity.item()]
+                       L_solide.item(), L_gradient_nul.item(), L_flux_continuity.item(), L_monotonicity.item()]
     return total_loss, loss_components
 
 def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, X_interface_total, R_norm, R_prime_norm, D_solid_norm, D_liquid_norm):
@@ -171,6 +171,11 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     L_fick_s = torch.mean(torch.square(F_solid(P_from_G(model(X_fick_solid), X_fick_solid), X_fick_solid)))
     L_fick_l = torch.mean(torch.square(F_liquid(P_from_G(model(X_fick_liquid), X_fick_liquid), X_fick_liquid)))
     
+    # NOUVEAU: Perte de Monotonicité (∂P/∂r >= 0)
+    P_mono = P_from_G(model(X_fick_total), X_fick_total)
+    dP_dr_mono = torch.autograd.grad(P_mono, X_fick_total, grad_outputs=torch.ones_like(P_mono), create_graph=True)[0][:, 0].view(-1, 1)
+    L_monotonicity = torch.mean(torch.square(torch.relu(-dP_dr_mono)))
+
     # Pertes Données
     X_data_total.requires_grad_(True)
     t_vals = X_data_total[:, 1]
@@ -192,18 +197,16 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     dP_dr = torch.autograd.grad(P_grad, X_grad_total, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
     L_gradient_nul = torch.mean(torch.square(dP_dr))
     
-    # --- Continuité du Flux à r=R ---
+    # Continuité du Flux à r=R
     X_interface_total.requires_grad_(True)
     P_interface = P_from_G(model(X_interface_total), X_interface_total)
     dP_dr_interface = torch.autograd.grad(P_interface, X_interface_total, grad_outputs=torch.ones_like(P_interface), create_graph=True)[0][:, 0].view(-1, 1)
     L_flux_continuity = torch.mean(torch.square((D_solid_norm - D_liquid_norm) * dP_dr_interface))
 
-    # MODIFIÉ: Pondération désactivée (tout à 1.0)
-    w_data = 1.0
-    w_phys = 1.0
-    w_flux = 1.0
+    # Pondération (tout à 1.0)
+    w_data, w_phys, w_flux, w_mono = 1.0, 1.0, 1.0, 1.0
     
-    # NOUVEAU: Calcul des poids dynamiques pour la perte de Fick (Full Batch)
+    # Poids dynamiques pour la perte de Fick
     total_fick_points = X_fick_total.shape[0]
     if total_fick_points > 0:
         w_fick_solid = X_fick_solid.shape[0] / total_fick_points
@@ -211,12 +214,12 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     else:
         w_fick_solid, w_fick_liquid = 0.0, 0.0
 
-    # MODIFIÉ: Application des poids dynamiques dans le calcul de la perte totale
     total_loss = (w_data * L_yz) + (w_data * L_solide) + (w_phys * L_ini) + (w_phys * L_gradient_nul) + \
-                 (w_phys * w_fick_solid * L_fick_s) + (w_phys * w_fick_liquid * L_fick_l) + (w_flux * L_flux_continuity)
+                 (w_phys * w_fick_solid * L_fick_s) + (w_phys * w_fick_liquid * L_fick_l) + \
+                 (w_flux * L_flux_continuity) + (w_mono * L_monotonicity)
 
     loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
-                       L_solide.item(), L_gradient_nul.item(), L_flux_continuity.item()]
+                       L_solide.item(), L_gradient_nul.item(), L_flux_continuity.item(), L_monotonicity.item()]
     return total_loss, loss_components
 
 def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
@@ -232,7 +235,6 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     
     print(f"Création du DataSet enrichi...")
     def_t = params["def_t"]
-    # MODIFIÉ: Nombre de points de collocation réduit pour accélérer les tests
     nb_r, nb_t = 100, 100
     
     X_r_f_total = torch.linspace(0, R_prime_norm, nb_r).view(-1, 1)
@@ -259,7 +261,8 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
 
     print(f"DataSet créé: {X_fick_total.shape[0]} Fick, {X_data_total.shape[0]} Données, {X_grad_total.shape[0]} Gradient, {X_interface_total.shape[0]} Interface.")
 
-    loss = [[] for _ in range(8)]
+    # MODIFIÉ: 9 composantes de perte
+    loss = [[] for _ in range(9)]
     model_opti = copy.deepcopy(model)
     min_loss_val = float('inf')
 
@@ -314,7 +317,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     return model_opti, loss
 
 # ==============================================================================
-# SECTION 3: SAUVEGARDE ET VISUALISATION (Inchangée)
+# SECTION 3: SAUVEGARDE ET VISUALISATION (MODIFIÉ)
 # ==============================================================================
 def save_results(model, loss_history, params_pinns, params, path):
     file_path = path / "Data"
@@ -343,7 +346,8 @@ def affichage(path: Path):
     model.eval()
     
     fig, ax1 = plt.subplots(1, 1, figsize=(14, 7))
-    loss_names = ["Total Sum", "L_yz", "L_initial", "L_fick_solid", "L_fick_liquid", "L_solid", "L_gradient_nul", "L_flux_continuity"]
+    # MODIFIÉ: Ajout du nom de la nouvelle perte
+    loss_names = ["Total Sum", "L_yz", "L_initial", "L_fick_solid", "L_fick_liquid", "L_solid", "L_gradient_nul", "L_flux_continuity", "L_monotonicity"]
     for i, name in enumerate(loss_names):
         if i < len(loss):
             ax1.plot(loss[i], label=name)
@@ -393,7 +397,7 @@ def affichage(path: Path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Lancer un entraînement PINN pour le cas enrichi (deux milieux + pertes additionnelles).")
     parser.add_argument('--data_file', type=str, required=True, help="Chemin vers le fichier de données .pkl global.")
-    parser.add_argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine des résultats.")
+    parser.add-argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine des résultats.")
     parser.add_argument('--case_name', type=str, required=True, help="Le nom du cas à traiter.")
     
     try:       
