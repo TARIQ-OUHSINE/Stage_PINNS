@@ -397,7 +397,7 @@ def affichage(path: Path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Lancer un entraînement PINN pour le cas enrichi (deux milieux + pertes additionnelles).")
     parser.add_argument('--data_file', type=str, required=True, help="Chemin vers le fichier de données .pkl global.")
-    parser.add-argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine des résultats.")
+    parser.add_argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine des résultats.")
     parser.add_argument('--case_name', type=str, required=True, help="Le nom du cas à traiter.")
     
     try:       
