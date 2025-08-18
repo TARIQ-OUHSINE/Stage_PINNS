@@ -1,11 +1,5 @@
 # ==============================================================================
-#           SCRIPT UNIQUE - VERSION AVEC POIDS DYNAMIQUES
-#               + MONOTONICITÉ + PERTE DONNÉES SOLVANT (L_solvant)
-# ==============================================================================
-
-# ==============================================================================
-#           SCRIPT UNIQUE - VERSION AVEC POIDS MANUELS RÉAJUSTÉS
-#               + CORRECTION PLOT LOSS + AJOUT PLOT SOLID COLOMAP
+#           SCRIPT UNIQUE - VERSION AVEC NOUVELLE CONFIGURATION L-BFGS
 # ==============================================================================
 
 import sys
@@ -30,6 +24,7 @@ import argparse
 # ==============================================================================
 
 class Physics_informed_nn(nn.Module):
+    # ... (code inchangé)
     def __init__(self, nb_layer: int, hidden_layer: int, rayon_R_norm: float, coeff_normal: float):
         super(Physics_informed_nn, self).__init__()
         self.coeff_normal = coeff_normal
@@ -46,6 +41,7 @@ class Physics_informed_nn(nn.Module):
         return x
 
 class Fick:
+    # ... (code inchangé)
     def __init__(self, D, T, P_0):
         self.D, self.T, self.P_0 = D, T, P_0
 
@@ -58,12 +54,14 @@ class Fick:
         return X_r * dP_dt - self.D * (X_r * dP_drr + 2 * dP_dr) + X_r * ((P_func - self.P_0) / self.T)
 
 def P_from_G(G, X):
+    # ... (code inchangé)
     X.requires_grad_(True)
     X_r = X[:, 0].view(-1, 1)
     dG_dr = torch.autograd.grad(G, X, grad_outputs=torch.ones_like(G), create_graph=True)[0][:, 0].view(-1, 1)
     return (X_r / 3) * dG_dr + G
 
 def normalisation(R, D_ref, R_prime, D_prime):
+    # ... (code inchangé)
     ordre_R = math.floor(math.log10(abs(R))) if R != 0 else -7
     R_norm = R * 10**(-ordre_R)
     D_norm = D_ref / (10**ordre_R)**2
@@ -72,6 +70,7 @@ def normalisation(R, D_ref, R_prime, D_prime):
     return R_norm, D_norm, R_prime_norm, D_prime_norm, ordre_R
 
 class DataAugmentation:
+    # ... (code inchangé)
     def __init__(self, data_df, coeff_normal, mono=False):
         self.mono, self.coeff_normal = mono, coeff_normal
         self.times = np.array(data_df["t"])
@@ -102,11 +101,11 @@ class DataAugmentation:
         return result.x, result.fun
 
 # ==============================================================================
-# SECTION 2: MOTEUR D'ENTRAÎNEMENT (MODIFIÉ)
+# SECTION 2: MOTEUR D'ENTRAÎNEMENT (Seule la fonction run_enhanced_case est modifiée)
 # ==============================================================================
 
 def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, X_interface_batch, R_norm, R_prime_norm, D_solid_norm, D_liquid_norm):
-    # --- Pertes de Physique (Fick) ---
+    # ... (code inchangé)
     X_fick_batch.requires_grad_(True)
     r_fick = X_fick_batch[:, 0]
     X_fick_solid = X_fick_batch[r_fick < R_norm]
@@ -119,7 +118,6 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     dP_dr_mono = torch.autograd.grad(P_mono, X_fick_batch, grad_outputs=torch.ones_like(P_mono), create_graph=True)[0][:, 0].view(-1, 1)
     L_monotonicity = torch.mean(torch.square(torch.relu(-dP_dr_mono)))
     
-    # --- Pertes sur les Données et Conditions aux Limites ---
     X_data_batch.requires_grad_(True)
     t_vals = X_data_batch[:, 1]
     X_boundary_batch = X_data_batch[t_vals > 0]
@@ -154,10 +152,10 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
     dP_dr_interface = torch.autograd.grad(P_interface, X_interface_batch, grad_outputs=torch.ones_like(P_interface), create_graph=True)[0][:, 0].view(-1, 1)
     L_flux_continuity = torch.mean(torch.square((D_solid_norm - D_liquid_norm) * dP_dr_interface))
     
-    w_data = 1.0
+    w_data = 50.0
     w_phys = 1.0
-    w_flux = 1.0
-    w_mono = 1.0
+    w_flux = 10.0
+    w_mono = 10.0
 
     total_fick_points = X_fick_batch.shape[0]
     w_fick_solid, w_fick_liquid = (X_fick_solid.shape[0] / total_fick_points, X_fick_liquid.shape[0] / total_fick_points) if total_fick_points > 0 else (0.0, 0.0)
@@ -167,12 +165,12 @@ def cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data
                  (w_phys * (w_fick_solid * L_fick_s + w_fick_liquid * L_fick_l)) + \
                  (w_flux * L_flux_continuity) + (w_mono * L_monotonicity)
     
-    # MODIFIÉ: Ordre de la liste corrigé et vérifié pour correspondre aux noms dans `affichage`
     loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
                        L_solide.item(), L_solvant.item(), L_gradient_nul.item(), L_flux_continuity.item(), L_monotonicity.item()]
     return total_loss, loss_components
 
 def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, X_interface_total, R_norm, R_prime_norm, D_solid_norm, D_liquid_norm):
+    # ... (code inchangé)
     X_fick_total.requires_grad_(True)
     r_fick = X_fick_total[:, 0]
     X_fick_solid = X_fick_total[r_fick < R_norm]
@@ -218,10 +216,10 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
     dP_dr_interface = torch.autograd.grad(P_interface, X_interface_total, grad_outputs=torch.ones_like(P_interface), create_graph=True)[0][:, 0].view(-1, 1)
     L_flux_continuity = torch.mean(torch.square((D_solid_norm - D_liquid_norm) * dP_dr_interface))
 
-    w_data = 1.0
+    w_data = 50.0
     w_phys = 1.0
-    w_flux = 1.0
-    w_mono = 1.0
+    w_flux = 10.0
+    w_mono = 10.0
     
     total_fick_points = X_fick_total.shape[0]
     w_fick_solid, w_fick_liquid = (X_fick_solid.shape[0] / total_fick_points, X_fick_liquid.shape[0] / total_fick_points) if total_fick_points > 0 else (0.0, 0.0)
@@ -231,13 +229,14 @@ def cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X
                  (w_phys * (w_fick_solid * L_fick_s + w_fick_liquid * L_fick_l)) + \
                  (w_flux * L_flux_continuity) + (w_mono * L_monotonicity)
 
-    # MODIFIÉ: Ordre de la liste corrigé et vérifié
     loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
                        L_solide.item(), L_solvant.item(), L_gradient_nul.item(), L_flux_continuity.item(), L_monotonicity.item()]
     return total_loss, loss_components
 
+# ==============================================================================
+# MODIFIÉ: La fonction d'entraînement est modifiée pour utiliser le nouveau LBFGS
+# ==============================================================================
 def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
-    # ... (le corps de cette fonction reste inchangé) ...
     torch.manual_seed(1234)
     batch_size = params_pinns["batch_size"]
     R_m, R_prime_m = params["R_vrai_m"], params["R_prime_m"]
@@ -281,7 +280,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     min_loss_val = float('inf')
 
     print("\n--- Phase 1: Adam Optimizer avec Mini-Batching ---")
-    optimizer = optim.Adam(model.parameters(), lr=params_pinns['lr'])
+    optimizer_adam = optim.Adam(model.parameters(), lr=params_pinns['lr'])
     epochs_phase1 = 8000
     for it in tqdm(range(epochs_phase1), desc="Phase 1 (Adam)", file=sys.stdout):
         n = batch_size // 4
@@ -295,45 +294,59 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
         X_grad_batch = X_grad_total[grad_indices]
         X_interface_batch = X_interface_total[interface_indices]
         
-        optimizer.zero_grad()
+        optimizer_adam.zero_grad()
         L, L_list = cost_enhanced_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, X_interface_batch, R_norm, R_prime_norm, D_solid_norm, D_liquid_norm)
         L.backward()
-        optimizer.step()
+        optimizer_adam.step()
         
         if it % 10 == 0:
             for i in range(len(L_list)): loss[i].append(L_list[i])
             if L_list[0] < min_loss_val:
                 min_loss_val = L_list[0]
                 model_opti = copy.deepcopy(model)
-
-    print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch ---")
-    optimizer = optim.LBFGS(model.parameters(), lr=1.0, max_iter=10, max_eval=20, 
-                        history_size=150, 
-                        tolerance_grad=1e-7, 
-                        tolerance_change=1e-9, 
-                        line_search_fn="strong_wolfe")
-    epochs_phase2 = 100
-    for it in tqdm(range(epochs_phase2), desc="Phase 2 (L-BFGS)", file=sys.stdout):
-        def closure():
-            optimizer.zero_grad()
-            L, L_list = cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, X_interface_total, R_norm, R_prime_norm, D_solid_norm, D_liquid_norm)
-            L.backward()
-            nonlocal min_loss_val, model_opti
-            if L_list[0] < min_loss_val:
-                min_loss_val = L_list[0]
-                model_opti = copy.deepcopy(model)
-            if it % 10 == 0:
-                for i in range(len(L_list)): loss[i].append(L_list[i])
-            return L
-        optimizer.step(closure)
-
-    print(f"\nEntraînement terminé. Meilleure perte (sum): {min_loss_val:.2e}")
-    return model_opti, loss
     
+    # NOUVELLE PHASE 2: L-BFGS "one-shot"
+    print("\n--- Phase 2: L-BFGS Optimizer avec Full-Batch (fine-tuning) ---")
+    # On utilise le meilleur modèle de la phase Adam comme point de départ
+    model = model_opti 
+    optimizer_lbfgs = optim.LBFGS(
+        model.parameters(), 
+        max_iter=500, # Nombre total d'itérations pour L-BFGS
+        tolerance_grad=1e-7, 
+        tolerance_change=1e-9, 
+        line_search_fn="strong_wolfe"
+    )
+
+    # La fonction closure est appelée à répétition par l'optimiseur L-BFGS
+    lbfgs_iter_count = 0
+    def closure():
+        nonlocal lbfgs_iter_count
+        optimizer_lbfgs.zero_grad()
+        L, L_list = cost_enhanced_full_batch(model, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, X_interface_total, R_norm, R_prime_norm, D_solid_norm, D_liquid_norm)
+        L.backward()
+        
+        # Enregistrement des pertes à chaque évaluation de la closure
+        for i in range(len(L_list)): loss[i].append(L_list[i])
+        
+        if lbfgs_iter_count % 20 == 0:
+            print(f"[L-BFGS] Iter {lbfgs_iter_count} - Loss: {L.item():.2e}")
+        lbfgs_iter_count += 1
+        
+        return L
+
+    optimizer_lbfgs.step(closure)
+
+    # La perte finale est la dernière perte calculée
+    final_loss = loss[0][-1] if loss[0] else float('inf')
+    print(f"\nEntraînement terminé. Perte finale (L-BFGS): {final_loss:.2e}")
+    
+    return model, loss # Le modèle a été modifié en place par L-BFGS
+
 # ==============================================================================
-# SECTION 3: SAUVEGARDE ET VISUALISATION (MODIFIÉ)
+# SECTION 3 & 4 (Sauvegarde, Affichage, Main) - Inchangées
 # ==============================================================================
 def save_results(model, loss_history, params_pinns, params, path):
+    # ... (code inchangé)
     file_path = path / "Data"
     torch.save(model.state_dict(), file_path / "model.pth")
     with open(file_path / "loss.json", "w") as f: json.dump(loss_history, f)
@@ -342,6 +355,7 @@ def save_results(model, loss_history, params_pinns, params, path):
     print(f"Résultats sauvegardés dans {file_path}")
 
 def affichage(path: Path):
+    # ... (code inchangé)
     print(f"Génération des graphiques pour : {path}")
     data_dir = path / "Data"
     graph_dir = path / "Graphiques"
@@ -360,14 +374,12 @@ def affichage(path: Path):
     model.eval()
     
     fig, ax1 = plt.subplots(1, 1, figsize=(14, 7))
-    # MODIFIÉ: Liste des noms corrigée et vérifiée pour correspondre aux données de perte
-    # Ordre: Total, yz, ini, fick_s, fick_l, solide, solvant, grad, flux, mono
     loss_names = ["Total Sum", "L_yz (Total Avg)", "L_initial", "L_fick_solid", "L_fick_liquid", 
                   "L_solid (Data)", "L_solvant (Data)", "L_gradient_nul", "L_flux_continuity", "L_monotonicity"]
     for i, name in enumerate(loss_names):
         if i < len(loss):
             ax1.plot(loss[i], label=name)
-    ax1.set_yscale('log'); ax1.set_title('Evolution de la fonction de coût'); ax1.set_xlabel('Itérations (x10)'); ax1.set_ylabel('Coût (log)'); ax1.legend(); ax1.grid(True)
+    ax1.set_yscale('log'); ax1.set_title('Evolution de la fonction de coût'); ax1.set_xlabel('Itérations (evals)'); ax1.set_ylabel('Coût (log)'); ax1.legend(); ax1.grid(True)
     fig.tight_layout(); fig.savefig(graph_dir / "loss_evolution.png"); plt.close(fig)
     
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 7))
@@ -399,7 +411,6 @@ def affichage(path: Path):
 
     fig.tight_layout(); fig.savefig(graph_dir / "mean_polarization_fits.png"); plt.close(fig)
     
-    # --- Colormap pour le domaine TOTAL ---
     r_range = torch.linspace(0, R_prime_m, 100)
     t_range = torch.linspace(0, params["def_t"], 100)
     grid_r, grid_t = torch.meshgrid(r_range, t_range, indexing='ij')
@@ -417,8 +428,7 @@ def affichage(path: Path):
     ax.set_xlabel('Rayon r (nm)'); ax.set_ylabel('Temps t (s)'); ax.set_title(f"Polarisation (Domaine Total) - R = {R_m * 1e9:.1f} nm"); ax.legend()
     plt.savefig(graph_dir / "P_r_t_colormap_total.png"); plt.close(fig)
     
-    # NOUVEAU: Colormap pour le domaine SOLIDE uniquement
-    r_range_solid = torch.linspace(0, R_m, 50) # Moins de points car domaine plus petit
+    r_range_solid = torch.linspace(0, R_m, 50) 
     grid_r_solid, grid_t_solid = torch.meshgrid(r_range_solid, t_range, indexing='ij')
     grid_r_solid_norm = grid_r_solid / (10**ordre_R)
     X_grid_solid = torch.stack([grid_r_solid_norm.flatten(), grid_t_solid.flatten()], dim=1)
@@ -433,11 +443,8 @@ def affichage(path: Path):
     ax.set_xlabel('Rayon r (nm)'); ax.set_ylabel('Temps t (s)'); ax.set_title(f"Polarisation (Solide Uniquement) - R = {R_m * 1e9:.1f} nm")
     plt.savefig(graph_dir / "P_r_t_colormap_solid.png"); plt.close(fig)
 
-# ==============================================================================
-# SECTION 4: SCRIPT PRINCIPAL D'EXÉCUTION (Inchangée)
-# ==============================================================================
-
 if __name__ == "__main__":
+    # ... (code inchangé)
     parser = argparse.ArgumentParser(description="Lancer un entraînement PINN pour le cas enrichi (deux milieux + pertes additionnelles).")
     parser.add_argument('--data_file', type=str, required=True, help="Chemin vers le fichier de données .pkl global.")
     parser.add_argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine des résultats.")
