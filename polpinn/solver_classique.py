@@ -180,7 +180,7 @@ class DataGenerator:
             filename = f"{dir}/{self.R}_{self.C_in}_{self.C_out}_{self.D_in}_{self.D_out}_{self.P0_in}_{self.P0_out}_{self.T1_in}_{self.T1_out}.png"
             plt.savefig(filename, dpi=180)
 
-    def get(self) -> dict[str, Tensor | float | int]:
+    def get(self):
         if self.msh.comm.rank == 0:
             P_tensor = torch.tensor(self.P_time, dtype=torch.float32)
             r = self.r_sorted
