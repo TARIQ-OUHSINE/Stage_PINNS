@@ -171,8 +171,19 @@ def main(args):
     
     if rank == 0: print("\n--- Toutes les simulations sont terminées. ---")
 
+# ==============================================================================
+#                 BLOC D'EXÉCUTION PRINCIPAL
+# ==============================================================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Lancer les simulations de référence FEM."); parser.add_argument('--data_file', type=str, required=True); parser.add_argument('--output_dir', type=str, required=True)
-    try: args = parser.parse_args()
-    except SystemExit: class Args: data_file = "donnees.pkl"; output_dir = "FEM_Results"; args = Args()
+    # On définit les arguments attendus en ligne de commande
+    parser = argparse.ArgumentParser(description="Lancer les simulations de référence FEM.")
+    parser.add_argument('--data_file', type=str, required=True, 
+                        help="Chemin vers le fichier de données .pkl global.")
+    parser.add_argument('--output_dir', type=str, required=True, 
+                        help="Chemin vers le dossier racine où stocker les résultats.")
+    
+    # On parse les arguments fournis par la ligne de commande (via Slurm)
+    args = parser.parse_args()
+    
+    # On appelle la fonction principale avec les arguments parsés
     main(args)
