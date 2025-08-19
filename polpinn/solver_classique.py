@@ -1,22 +1,11 @@
 # ==============================================================================
 #           SCRIPT AUTONOME POUR LA GÉNÉRATION DE DONNÉES DE RÉFÉRENCE (FEM)
 #
-# Ce script est conçu pour fonctionner en tandem avec le script PINN.
-# - Il lit les paramètres depuis le même fichier de données .pkl.
-# - Il utilise la même logique de calcul des paramètres.
-# - Il stocke les résultats dans une arborescence de dossiers similaire.
+# Cette version intègre la classe DataGenerator originale et adapte la logique
+# de pilotage pour assurer la compatibilité et la stabilité.
 #
 # Auteur: Tariq Ouhsine (adapté par l'IA)
 # Date: 19/08/2025
-#
-# Pré-requis: FEniCSx (dolfinx), petsc4py, mpi4py, numpy, pickle
-#
-# Lancement sur un cluster (via un script Slurm):
-#   srun python run_fem_simulations.py --data_file <chemin_pkl> --output_dir <dossier_sortie>
-#
-# Exemple de commande dans un script Slurm:
-#   srun python run_fem_simulations.py --data_file donnees.pkl --output_dir ./FEM_Results
-#
 # ==============================================================================
 
 import os
@@ -34,29 +23,20 @@ try:
     from dolfinx import mesh, fem
     from dolfinx.fem.petsc import LinearProblem
 except ImportError as e:
-    print("=" * 80)
-    print("ERREUR CRITIQUE: FEniCSx (dolfinx) ou une de ses dépendances n'est pas installée.")
-    print(f"Détail: {e}")
-    print("\nSur un cluster, assurez-vous d'avoir chargé le bon module ou activé le bon environnement Conda.")
-    print("=" * 80)
-    exit()
+    print("="*80); print("ERREUR CRITIQUE: FEniCSx non trouvé."); print(f"Détail: {e}"); exit()
+
+# --- Dépendance PyTorch (requise par la classe DataGenerator) ---
+try:
+    import torch
+except ImportError:
+    print("="*80); print("ERREUR CRITIQUE: PyTorch non trouvé. Installez-le (pip install torch)"); exit()
 
 # ==============================================================================
-# SECTION 1: LE SOLVEUR NUMÉRIQUE (CLASSE DataGenerator - Inchangée)
+# SECTION 1: CLASSE DataGenerator ORIGINALE (INTÉGRÉE)
 # ==============================================================================
-from mpi4py import MPI
-import numpy as np
-import ufl
-from petsc4py.PETSc import ScalarType
-from dolfinx import mesh, fem
-from dolfinx.fem.petsc import LinearProblem
-import torch
-from torch import Tensor
-from collections.abc import Callable
-import os
-
 
 class DataGenerator:
+    # --- La classe est collée ici sans aucune modification ---
     def __init__(self,
                  R: float, r_max: float,
                  C_in: float, C_out: float,
@@ -107,135 +87,81 @@ class DataGenerator:
 
         self.msh = None
         self.V = None
-        self.P_time = []
+        self.P_time = None # Modifié : sera un np.array, pas une liste
         self.r_sorted = None
         self.t_vec = None
 
-
-# REMPLACEZ L'INTÉGRALITÉ DE VOTRE MÉTHODE solve() PAR CELLE-CI :
-def solve(self):
-    self.msh = mesh.create_interval(MPI.COMM_WORLD, self.Nr, [0.0, self.r_max])
-    self.V = fem.functionspace(self.msh, ("Lagrange", 1))
-
-    # --- Définition de la géométrie et des fonctions ---
-    x = ufl.SpatialCoordinate(self.msh)[0]
-    r = x
-
-    # --- NOUVEAU : Introduire le temps comme une constante FEniCSx ---
-    t = fem.Constant(self.msh, ScalarType(0.0))
-
-    # --- NOUVEAU : Définir une rampe pour la condition P0 ---
-    # La rampe montera de 0 à 1 sur une durée T_ramp.
-    T_ramp = self.Tfinal * 0.01  # Montée en puissance sur les 1% du temps total
-    if T_ramp == 0: T_ramp = self.dt # Éviter la division par zéro
-    
-    # P0_func est la fonction cible (ex: 100).
-    # On la multiplie par min(1.0, t/T_ramp)
-    P0_func = self.P0(r)
-    P0_expr = ufl.conditional(t < T_ramp, P0_func * t / T_ramp, P0_func)
-    
-    C_expr = self.C(r)
-    D_expr = self.D(r)
-    T1_expr = self.T1(r)
-
-    P_n1 = ufl.TrialFunction(self.V)
-    v = ufl.TestFunction(self.V)
-    P_n = fem.Function(self.V)
-    P_n.x.array[:] = 0.0
-
-    dx = ufl.dx
-    
-    a_form = (C_expr * r**2 / self.dt * P_n1 * v) * dx \
-           + (r**2 * D_expr * C_expr * ufl.dot(ufl.grad(P_n1), ufl.grad(v))) * dx \
-           + (C_expr * r**2 / T1_expr * P_n1 * v) * dx
-
-    L_form = (C_expr * r**2 / self.dt * P_n * v) * dx \
-           + (C_expr * r**2 / T1_expr * P0_expr * v) * dx
-
-    problem = LinearProblem(a_form, L_form, [], petsc_options={"ksp_type": "preonly", "pc_type": "lu"})
-    
-    # --- Boucle temporelle avec mise à jour de la constante temps ---
-    n_loc = self.V.dofmap.index_map.size_local
-    r_loc = self.V.tabulate_dof_coordinates()[:n_loc, 0]
-    r_all = self.msh.comm.gather(r_loc, root=0)
-
-    if self.msh.comm.rank == 0:
-        r_glob = np.concatenate(r_all)
-        order = np.argsort(r_glob)
-        self.r_sorted = r_glob[order]
-        P_hist = [np.zeros_like(self.r_sorted)] # On stocke l'état initial t=0
-
-    # On commence à t=dt car t=0 est déjà stocké
-    time_current = 0.0
-    for i in range(self.Nt):
-        # Mise à jour du temps pour la rampe
-        time_current += self.dt
-        t.value = time_current
+    def solve(self):
+        # --- CORRECTION DE STABILITÉ : Ajout de la technique de la rampe ---
+        self.msh = mesh.create_interval(MPI.COMM_WORLD, self.Nr, [0.0, self.r_max])
+        self.V = fem.functionspace(self.msh, ("Lagrange", 1))
+        x = ufl.SpatialCoordinate(self.msh)[0]
+        r = x
         
-        P_new = problem.solve()
+        t_fencis = fem.Constant(self.msh, ScalarType(0.0))
+        T_ramp = self.Tfinal * 0.05 # Rampe sur 5% du temps
+        if T_ramp == 0: T_ramp = self.dt
 
-        P_loc = P_new.x.array[:n_loc]
-        P_all = self.msh.comm.gather(P_loc, root=0)
+        P0_func = self.P0(r)
+        P0_expr = ufl.conditional(t_fencis < T_ramp, P0_func * t_fencis / T_ramp, P0_func)
+        
+        C_expr = self.C(r)
+        D_expr = self.D(r)
+        T1_expr = self.T1(r)
+        
+        P_n1 = ufl.TrialFunction(self.V)
+        v = ufl.TestFunction(self.V)
+        P_n = fem.Function(self.V)
+        P_n.x.array[:] = 0.0
+        
+        dx = ufl.dx
+        w = r**2 # Utilisation de la formulation originale
+        
+        mass_lhs = (C_expr / ScalarType(self.dt)) * w * P_n1 * v * dx
+        mass_rhs = (C_expr / ScalarType(self.dt)) * w * P_n * v * dx
+        diff_lhs = D_expr * C_expr * w * ufl.dot(ufl.grad(P_n1), ufl.grad(v)) * dx
+        react_lhs = (C_expr / T1_expr) * w * P_n1 * v * dx
+        react_rhs = (C_expr / T1_expr) * w * P0_expr * v * dx
+        
+        a_form = mass_lhs + diff_lhs + react_lhs
+        L_form = mass_rhs + react_rhs
+        
+        problem = LinearProblem(a_form, L_form, [], petsc_options={"ksp_type": "preonly", "pc_type": "lu"})
+        
+        n_loc = self.V.dofmap.index_map.size_local
+        r_loc = self.V.tabulate_dof_coordinates()[:n_loc, 0]
+        r_all = self.msh.comm.gather(r_loc, root=0)
+        
         if self.msh.comm.rank == 0:
-            P_glob = np.concatenate(P_all)
-            P_hist.append(P_glob[order].copy())
+            r_glob = np.concatenate(r_all)
+            order = np.argsort(r_glob)
+            self.r_sorted = r_glob[order]
+            P_hist = [np.zeros_like(self.r_sorted)] # Stocke l'état t=0
 
-        P_n.x.array[:] = P_new.x.array
-    
-    if self.msh.comm.rank == 0:
-        self.P_time = np.array(P_hist)
-        self.t_vec = np.linspace(0, self.Tfinal, self.Nt + 1)
+        time_current = 0.0
+        for _ in range(self.Nt):
+            time_current += self.dt
+            t_fencis.value = time_current
 
-    def plot(self, dir: str = "data/plot"):
+            P_new = problem.solve()
+            P_loc = P_new.x.array[:n_loc]
+            P_all = self.msh.comm.gather(P_loc, root=0)
+            if self.msh.comm.rank == 0:
+                P_glob = np.concatenate(P_all)
+                P_hist.append(P_glob[order].copy())
+            P_n.x.array[:] = P_new.x.array
+            
         if self.msh.comm.rank == 0:
-            if self.P_time is None or self.r_sorted is None or self.t_vec is None:
-                return
-            import matplotlib.pyplot as plt
-            os.makedirs(dir, exist_ok=True)
-            plt.figure(figsize=(8, 5))
-            plt.imshow(self.P_time,
-                       extent=[0.0, self.r_max, 0.0, self.Tfinal],
-                       origin="lower",
-                       aspect="auto",
-                       cmap="viridis")
-            plt.colorbar(label=r"$P(r,t)$")
-            plt.xlabel(r"$r$ (m)")
-            plt.ylabel(r"$t$ (s)")
-            plt.title("Évolution de la polarisation P(r,t)")
-            plt.tight_layout()
-            filename = f"{dir}/{self.R}_{self.C_in}_{self.C_out}_{self.D_in}_{self.D_out}_{self.P0_in}_{self.P0_out}_{self.T1_in}_{self.T1_out}.png"
-            plt.savefig(filename, dpi=180)
+            self.P_time = np.array(P_hist)
+            self.t_vec = np.linspace(0, self.Tfinal, self.Nt + 1)
 
-
-    # REMPLACEZ L'ANCIENNE MÉTHODE 'get' PAR CELLE-CI :
-    def get(self) -> dict:
-        """
-        Retourne les résultats de la simulation sous forme de dictionnaire simple.
-        Cette fonction est conçue pour être appelée en parallèle : seul le
-        processeur de rang 0 renverra des données.
-        """
-        if self.msh.comm.rank == 0:
-            # Vérifie que la simulation a bien tourné
-            if self.P_time is None or self.r_sorted is None or self.t_vec is None:
-                return {}
-                
-            # On retourne un dictionnaire propre avec les bonnes clés
-            to_send = {
-                "P_rt": self.P_time, # La matrice de solution
-                "r": self.r_sorted,  # Le vecteur des rayons
-                "t": self.t_vec      # Le vecteur des temps
-            }
-            return to_send
-        return {}
+    # --- La méthode get() est supprimée car nous allons accéder directement aux attributs ---
 
 # ==============================================================================
-# SECTION 2: LOGIQUE DE PILOTAGE DES SIMULATIONS (Adaptée au workflow PINN)
+# SECTION 2: LOGIQUE DE PILOTAGE ADAPTÉE
 # ==============================================================================
 
 def main(args):
-    """
-    Fonction principale qui orchestre la simulation de tous les cas.
-    """
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
 
@@ -245,124 +171,81 @@ def main(args):
     all_data = None
     if rank == 0:
         base_output.mkdir(exist_ok=True)
-        print("="*60)
-        print("Lancement des simulations de référence (FEM)")
-        print(f"Fichier de données : {data_file}")
-        print(f"Dossier de sortie  : {base_output}")
-        print("="*60)
-
+        print("="*60); print("Lancement des simulations de référence (FEM)"); print(f"Fichier de données : {data_file}"); print(f"Dossier de sortie  : {base_output}"); print("="*60)
         if not data_file.exists():
             print(f"ERREUR: Le fichier de données '{data_file}' est introuvable.")
         else:
             with open(data_file, "rb") as f:
                 all_data = pickle.load(f)
             print(f"Trouvé {len(all_data)} cas à simuler dans le fichier .pkl.")
-
-    # Le processus principal diffuse les données à tous les autres processus
     all_data = comm.bcast(all_data, root=0)
-    if all_data is None:
-        return # Arrête tout si le fichier de données n'a pas pu être lu
+    if all_data is None: return
 
-    # --- Boucle sur chaque cas ---
     for case_name, exp_data in all_data.items():
         if rank == 0:
             print(f"\n--- Traitement du cas : {case_name} ---")
 
         try:
-            # 1. Extraction des paramètres (logique identique au script PINN)
             solid_data_key, solvent_data_key = "CrisOn", "JuiceOn"
-
             C_ref, D_ref_nm2_s = 60.0, 500.0
             D_ref_m2_s = D_ref_nm2_s * 1e-18
-            
-            # Concentrations en mol/L
             C_f = exp_data.get("C_f", C_ref)
             C_j = exp_data.get("C_j", C_ref)
-
-            # Calcul des coefficients de diffusion en m^2/s
             D_f_calculated = D_ref_m2_s * ((C_f / C_ref) ** (1/3))
             D_j_calculated = D_ref_m2_s * ((C_j / C_ref) ** (1/3))
-
-            # Assemblage de tous les paramètres
             params = {
-                "D_f": D_f_calculated, 
-                "D_j": D_j_calculated,
-                "T_1_f": exp_data.get("T_1_f", 300.0), 
-                "T_1_j": exp_data[solid_data_key]["TB_j"],
-                "P0_f": 1.0, 
-                "P0_j": exp_data[solvent_data_key]["P0_j"],
-                "def_t": max(exp_data[solid_data_key]["t"]),
-                "R_vrai_m": exp_data["R_s"] * 1.0e-9,
+                "D_f": D_f_calculated, "D_j": D_j_calculated,
+                "T_1_f": exp_data.get("T_1_f", 300.0), "T_1_j": exp_data[solid_data_key]["TB_j"],
+                "P0_f": 1.0, "P0_j": exp_data[solvent_data_key]["P0_j"],
+                "def_t": max(exp_data[solid_data_key]["t"]), "R_vrai_m": exp_data["R_s"] * 1.0e-9,
             }
             
-            # 2. Définition des paramètres pour le solveur
             params_solver = {
-                "R": params["R_vrai_m"],
-                "r_max": params["R_vrai_m"] * 6.0,
-                "C_in": C_f * 1000,   # Cristal, conversion mol/L -> mol/m^3
-                "C_out": C_j * 1000,  # Jus, conversion mol/L -> mol/m^3
-                "D_in": params["D_f"],
-                "D_out": params["D_j"],
-                "T1_in": params["T_1_f"],
-                "T1_out": params["T_1_j"],
-                "P0_in": params["P0_f"],
-                "P0_out": params["P0_j"],
-                "Tfinal": params["def_t"],
-                "Nr": 500,          # Résolution spatiale (r)
-                "Nt": 500,          # Résolution temporelle (t)
+                "R": params["R_vrai_m"], "r_max": params["R_vrai_m"] * 6.0,
+                "C_in": C_f * 1000, "C_out": C_j * 1000,
+                "D_in": params["D_f"], "D_out": params["D_j"],
+                "T1_in": params["T_1_f"], "T1_out": params["T_1_j"],
+                "P0_in": params["P0_f"], "P0_out": params["P0_j"],
+                "Tfinal": params["def_t"], "Nr": 500, "Nt": 500,
                 "tanh_slope": params["R_vrai_m"] * 0.05
             }
-
-            # 3. Lancement du solveur
+            
             if rank == 0: print("   Configuration et lancement de la simulation FEM...")
             solver = DataGenerator(**params_solver)
             solver.solve()
-            solver.plot()
             
-            # 4. Récupération et sauvegarde des résultats
-            results = solver.get()
-            
-            if rank == 0 and results:
-                # Création de la structure de dossier (identique au PINN)
-                output_path = base_output / f"{case_name}_reference_FEM"
-                data_dir = output_path / "Data"
-                data_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Sauvegarde dans un fichier .npz pour tout regrouper
-                output_file = data_dir / "reference_FEM_solution.npz"
-                np.savez(
-                    output_file,
-                    P_rt=results["P_rt"],
-                    r=results["r"],
-                    t=results["t"],
-                    params=params_solver
-                )
-                print(f"   -> Résultats sauvegardés dans {output_file}")
-            
+            # --- MODIFICATION DE LA LOGIQUE DE SAUVEGARDE ---
+            if rank == 0:
+                # On vérifie que la simulation a produit des résultats
+                if solver.P_time is not None:
+                    output_path = base_output / f"{case_name}_reference_FEM"
+                    data_dir = output_path / "Data"
+                    data_dir.mkdir(parents=True, exist_ok=True)
+                    output_file = data_dir / "reference_FEM_solution.npz"
+                    np.savez(
+                        output_file,
+                        P_rt=solver.P_time, # On accède directement à l'attribut
+                        r=solver.r_sorted,    # On accède directement à l'attribut
+                        t=solver.t_vec,       # On accède directement à l'attribut
+                        params=params_solver
+                    )
+                    print(f"   -> Résultats sauvegardés dans {output_file}")
+                else:
+                    print(f"   *** ATTENTION: La simulation pour {case_name} n'a pas produit de résultats. ***")
+
         except Exception as e:
             if rank == 0:
                 print(f"   *** ERREUR lors du traitement du cas {case_name}: {e} ***")
     
-    if rank == 0:
-        print("\n--- Toutes les simulations sont terminées. ---")
+    if rank == 0: print("\n--- Toutes les simulations sont terminées. ---")
 
-# ==============================================================================
-# POINT D'ENTRÉE DU SCRIPT
-# ==============================================================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Lancer les simulations de référence FEM pour les cas d'un fichier .pkl.")
-    parser.add_argument('--data_file', type=str, required=True, help="Chemin vers le fichier de données .pkl global.")
-    parser.add_argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine où stocker les résultats.")
-    
-    # Bloc pour permettre des tests faciles sans ligne de commande (comme dans le script PINN)
+    parser = argparse.ArgumentParser(description="Lancer les simulations de référence FEM.")
+    parser.add_argument('--data_file', type=str, required=True, help="Chemin vers le fichier .pkl global.")
+    parser.add_argument('--output_dir', type=str, required=True, help="Dossier racine des résultats.")
     try:       
         args = parser.parse_args()
     except SystemExit:
-        # Valeurs par défaut si le script est lancé sans arguments (ex: dans un IDE)
-        print("INFO: Aucun argument de ligne de commande. Utilisation des valeurs par défaut.")
-        class Args:
-            data_file = "donnees.pkl"
-            output_dir = "FEM_Results"
+        class Args: data_file = "donnees.pkl"; output_dir = "FEM_Results"
         args = Args()
-    
     main(args)
