@@ -65,34 +65,34 @@ class DataGenerator:
 
     def solve(self):
         # --- Maillage et espace ---
-        msh = mesh.create_interval(MPI.COMM_WORLD, self.Nr, [0.0, self.r_max])
-        V = fem.functionspace(msh, ("Lagrange", 1))
+        self.msh = mesh.create_interval(MPI.COMM_WORLD, self.Nr, [0.0, self.r_max])
+        self.V = fem.functionspace(self.msh, ("Lagrange", 1))
 
-        # --- Coordonnée radiale & poids régularisé ---
-        x = ufl.SpatialCoordinate(msh)[0]
+        # --- Coordonnée radiale & poids régularisé + NORMALISÉ ---
+        x = ufl.SpatialCoordinate(self.msh)[0]
         r = x
         h = self.r_max / self.Nr
-        eps_w = ScalarType((0.5 * h) ** 2)    # ~ h^2 / 4 pour éviter la ligne centrale singulière
-        w = r**2 + eps_w
+        eps_w = ScalarType((0.5 * h) ** 2)          # ~ h^2/4
+        w = (r**2 + eps_w) / ScalarType(self.r_max**2)  # <<< NORMALISATION CRITIQUE
 
         # --- Coeffs + planchers numériques ---
         C_raw, D_raw, T1_raw = self.C(r), self.D(r), self.T1(r)
-        C_expr  = ufl.max_value(C_raw,  ScalarType(1.0))     # C >= 1
-        D_expr  = ufl.max_value(D_raw,  ScalarType(1e-18))   # D >= 1e-18
-        T1_expr = ufl.max_value(T1_raw, ScalarType(1e-3))    # T1 >= 1e-3
+        C_expr  = ufl.max_value(C_raw,  ScalarType(1.0))      # C >= 1
+        D_expr  = ufl.max_value(D_raw,  ScalarType(1e-18))    # D >= 1e-18
+        T1_expr = ufl.max_value(T1_raw, ScalarType(1e-3))     # T1 >= 1e-3
         P0_func = self.P0(r)
 
-        # --- Rampe sur P0 (anti-choc initial) ---
-        t_now = fem.Constant(msh, ScalarType(0.0))
-        T_ramp = max(self.Tfinal * 0.02, 10 * self.dt)
+        # --- Rampe sur P0 ---
+        t_now = fem.Constant(self.msh, ScalarType(0.0))
+        T_ramp = max(self.Tfinal * 0.02, 10 * (self.Tfinal / self.Nt))
         P0_eff = ufl.conditional(t_now < T_ramp,
-                                 P0_func * (t_now / ScalarType(T_ramp)),
-                                 P0_func)
+                                P0_func * (t_now / ScalarType(T_ramp)),
+                                P0_func)
 
         # --- Inconnues/tests ---
-        P_n1 = ufl.TrialFunction(V)
-        v    = ufl.TestFunction(V)
-        P_n  = fem.Function(V)
+        P_n1 = ufl.TrialFunction(self.V)
+        v    = ufl.TestFunction(self.V)
+        P_n  = fem.Function(self.V)
         P_n.x.array[:] = 0.0
 
         dx = ufl.dx
@@ -105,34 +105,28 @@ class DataGenerator:
         reac_lhs = (C_expr / T1_expr) * w * P_n1 * v * dx
         reac_rhs = (C_expr / T1_expr) * w * P0_eff * v * dx
 
-        # Diagonal shift (pour éviter pivots nuls / améliorer le conditionnement)
-        alpha = ScalarType(1e-12)
-        a_form = mass_lhs + diff_lhs + reac_lhs + alpha * w * P_n1 * v * dx
+        # --- Diagonal shift ABSOLU (non pondéré) ---
+        alpha = ScalarType(1e-10)   # si besoin, 1e-9
+        a_form = mass_lhs + diff_lhs + reac_lhs + alpha * P_n1 * v * dx   # <<< shift non-pondéré
         L_form = mass_rhs + reac_rhs
 
-        # --- Problème linéaire robuste ---
-        # Option 1 (par défaut) : GMRES + ILU
-        petsc_opts = {
-            "ksp_type": "gmres",
-            "ksp_rtol": 1e-10,
-            "ksp_atol": 1e-14,
-            "pc_type": "ilu",
-        }
-        # Option 2 (si tu préfères LU) : décommente ci-dessous
-        # petsc_opts = {
-        #     "ksp_type": "preonly",
-        #     "pc_type": "lu",
-        #     "pc_factor_shift_type": "NONZERO",
-        #     "pc_factor_shift_amount": 1e-12,
-        # }
-
-        problem = LinearProblem(a_form, L_form, [], petsc_options=petsc_opts)
+        # --- Solveur : LU avec "nonzero shift" pour pivots ---
+        problem = LinearProblem(
+            a_form, L_form, [],
+            petsc_options={
+                "ksp_type": "preonly",
+                "pc_type": "lu",
+                "pc_factor_shift_type": "NONZERO",
+                "pc_factor_shift_amount": 1e-8,   # <<< pivot shift efficace
+                # "mat_mumps_icntl_24": 1,        # (si MUMPS dispo) pivot perturbation
+            }
+        )
 
         # --- Prépare collecte des dofs triés sur rank 0 ---
-        n_loc = V.dofmap.index_map.size_local
-        r_loc = V.tabulate_dof_coordinates()[:n_loc, 0]
-        r_all = msh.comm.gather(r_loc, root=0)
-        if msh.comm.rank == 0:
+        n_loc = self.V.dofmap.index_map.size_local
+        r_loc = self.V.tabulate_dof_coordinates()[:n_loc, 0]
+        r_all = self.msh.comm.gather(r_loc, root=0)
+        if self.msh.comm.rank == 0:
             r_glob = np.concatenate(r_all)
             order = np.argsort(r_glob)
             self.r_sorted = r_glob[order]
@@ -146,32 +140,28 @@ class DataGenerator:
 
             P_new = problem.solve()
 
-            # Garde-fou : on coupe net si non-fini
+            # Garde-fou : coupe net si non-fini (diagnostic)
             arr_loc = P_new.x.array[:n_loc]
             if not np.isfinite(arr_loc).all():
-                mmin = np.nanmin(arr_loc)
-                mmax = np.nanmax(arr_loc)
                 raise RuntimeError(f"Non-finite detected at t={t:.3e}s on local rank: "
-                                   f"min={mmin}, max={mmax}")
+                                f"min={np.nanmin(arr_loc)}, max={np.nanmax(arr_loc)}")
 
             # rassembler sur rank 0
-            P_all = msh.comm.gather(arr_loc, root=0)
-            if msh.comm.rank == 0:
+            P_all = self.msh.comm.gather(arr_loc, root=0)
+            if self.msh.comm.rank == 0:
                 P_glob = np.concatenate(P_all)[order]
                 if not np.isfinite(P_glob).all():
-                    mmin = np.nanmin(P_glob)
-                    mmax = np.nanmax(P_glob)
                     raise RuntimeError(f"Non-finite detected at t={t:.3e}s (global): "
-                                       f"min={mmin}, max={mmax}")
+                                    f"min={np.nanmin(P_glob)}, max={np.nanmax(P_glob)}")
                 P_hist.append(P_glob.copy())
 
             # avance en temps
             P_n.x.array[:] = P_new.x.array
 
-        # --- Sorties (rank 0) ---
-        if msh.comm.rank == 0:
-            self.P_time = np.array(P_hist)  # (Nt+1, Ndof triés)
+        if self.msh.comm.rank == 0:
+            self.P_time = np.array(P_hist)
             self.t_vec = np.linspace(0.0, self.Tfinal, self.Nt + 1)
+
 
 
 
