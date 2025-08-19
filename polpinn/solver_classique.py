@@ -72,61 +72,98 @@ class DataGenerator:
         self.msh = None; self.V = None; self.P_time = None
         self.r_sorted = None; self.t_vec = None
 
-    # --- LA MÉTHODE SOLVE() ENTIÈREMENT RÉÉCRITE ET CORRIGÉE ---
-    def solve(self):
-        self.msh = mesh.create_interval(MPI.COMM_WORLD, self.Nr, [0.0, self.r_max])
-        self.V = fem.functionspace(self.msh, ("Lagrange", 1))
+def solve(self):
+    # Maillage et espace
+    self.msh = mesh.create_interval(MPI.COMM_WORLD, self.Nr, [0.0, self.r_max])
+    self.V = fem.functionspace(self.msh, ("Lagrange", 1))
 
-        x = ufl.SpatialCoordinate(self.msh)[0]; r = x
-        P_n1 = ufl.TrialFunction(self.V); v = ufl.TestFunction(self.V)
-        P_n = fem.Function(self.V); P_n.x.array[:] = 0.0
+    # Coordonnée radiale et poids régularisé
+    x = ufl.SpatialCoordinate(self.msh)[0]
+    r = x
+    h = self.r_max / self.Nr
+    eps_w = ScalarType((0.5*h)**2)      # régularisation minimale du centre
+    w = r**2 + eps_w
 
-        C_expr = self.C(r); D_expr = self.D(r); T1_expr = self.T1(r)
-        
-        # --- TECHNIQUE DE STABILISATION (Rampe sur P0) ---
-        t_fencis = fem.Constant(self.msh, ScalarType(0.0))
-        # Rampe sur les premiers 2% du temps total ou 10*dt, la plus grande des deux
-        T_ramp = max(self.Tfinal * 0.02, 10 * self.dt)
-        P0_func = self.P0(r)
-        P0_expr = ufl.conditional(t_fencis < T_ramp, P0_func * t_fencis / T_ramp, P0_func)
-        
-        # --- FORMULATION FAIBLE MATHÉMATIQUEMENT CORRECTE ---
-        # Équation: C * dP/dt = (1/r^2)*d/dr(r^2*D*C*dP/dr) - C*(P-P0)/T1
-        # Multipliée par r^2*v et intégrée :
-        # Integral[ C*r^2*dP/dt*v + r^2*D*C*dP/dr*dv/dr + C*r^2/T1*(P-P0)*v ] dr = 0
-        dx = ufl.dx
-        
-        # Termes en P_n1 (futur) sur le côté gauche (a_form)
-        a_form = (C_expr * r**2 * P_n1 * v / self.dt) * dx \
-               + (r**2 * D_expr * C_expr * ufl.dot(ufl.grad(P_n1), ufl.grad(v))) * dx \
-               + (C_expr * r**2 / T1_expr * P_n1 * v) * dx
+    # Coefficients (avec planchers de sûreté)
+    C_expr_raw = self.C(r)
+    D_expr_raw = self.D(r)
+    T1_expr_raw = self.T1(r)
+    P0_func = self.P0(r)
 
-        # Termes connus (P_n et P0) sur le côté droit (L_form)
-        L_form = (C_expr * r**2 * P_n * v / self.dt) * dx \
-               + (C_expr * r**2 / T1_expr * P0_expr * v) * dx
+    # planchers numériques (max_value côté UFL)
+    C_expr  = ufl.max_value(C_expr_raw, ScalarType(1.0))        # si jamais C→0
+    D_expr  = ufl.max_value(D_expr_raw, ScalarType(1e-18))       # D très petit → plancher
+    T1_expr = ufl.max_value(T1_expr_raw, ScalarType(1e-3))       # T1 très petit → plancher
 
-        # --- Boucle temporelle ---
-        problem = LinearProblem(a_form, L_form, [], petsc_options={"ksp_type": "preonly", "pc_type": "lu"})
-        
+    # Rampe sur P0
+    t_now = fem.Constant(self.msh, ScalarType(0.0))
+    T_ramp = max(self.Tfinal * 0.02, 10 * (self.Tfinal/self.Nt))
+    P0_eff = ufl.conditional(t_now < T_ramp,
+                             P0_func * (t_now / ScalarType(T_ramp)),
+                             P0_func)
+
+    # Inconnues et test
+    P_n1 = ufl.TrialFunction(self.V)
+    v    = ufl.TestFunction(self.V)
+    P_n  = fem.Function(self.V)
+    P_n.x.array[:] = 0.0
+
+    dx = ufl.dx
+
+    # Schéma implicite (Euler)
+    dt = ScalarType(self.dt)
+    mass_lhs = (C_expr/dt) * w * P_n1 * v * dx
+    mass_rhs = (C_expr/dt) * w * P_n   * v * dx
+    diff_lhs = (D_expr*C_expr) * w * ufl.dot(ufl.grad(P_n1), ufl.grad(v)) * dx
+    reac_lhs = (C_expr/T1_expr) * w * P_n1 * v * dx
+    reac_rhs = (C_expr/T1_expr) * w * P0_eff * v * dx
+
+    a_form = mass_lhs + diff_lhs + reac_lhs
+    L_form = mass_rhs + reac_rhs
+
+    # Problème linéaire (tu peux garder LU si la régularisation est en place)
+    problem = LinearProblem(
+        a_form, L_form, [],
+        petsc_options={
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            # "mat_mumps_icntl_24": 1,  # si MUMPS dispo, tolérance pivot
+        }
+    )
+
+    # Prépare l’ordonnancement global des dofs pour le rank 0
+    n_loc = self.V.dofmap.index_map.size_local
+    r_loc = self.V.tabulate_dof_coordinates()[:n_loc, 0]
+    r_all = self.msh.comm.gather(r_loc, root=0)
+    if self.msh.comm.rank == 0:
+        r_glob = np.concatenate(r_all)
+        order = np.argsort(r_glob)
+        self.r_sorted = r_glob[order]
+        P_hist = [np.zeros_like(self.r_sorted)]
+
+    # Boucle en temps + rampe
+    t = 0.0
+    for _ in range(self.Nt):
+        t += float(self.dt)
+        t_now.value = ScalarType(t)
+
+        P_new = problem.solve()
+
+        # rassembler sur le rang 0
+        P_loc = P_new.x.array[:n_loc]
+        P_all = self.msh.comm.gather(P_loc, root=0)
         if self.msh.comm.rank == 0:
-            n_dofs = self.V.dofmap.index_map.size_global
-            self.r_sorted = self.V.tabulate_dof_coordinates()[:n_dofs, 0]
-            P_hist = [np.zeros_like(self.r_sorted)] # t=0
+            P_glob = np.concatenate(P_all)[order]
+            # garde une copie
+            P_hist.append(P_glob.copy())
 
-        time_current = 0.0
-        for _ in range(self.Nt):
-            time_current += self.dt
-            t_fencis.value = time_current
-            
-            P_new = problem.solve()
-            
-            if self.msh.comm.rank == 0:
-                P_hist.append(P_new.x.array.copy())
-            P_n.x.array[:] = P_new.x.array
-        
-        if self.msh.comm.rank == 0:
-            self.P_time = np.array(P_hist)
-            self.t_vec = np.linspace(0, self.Tfinal, self.Nt + 1)
+        # état suivant
+        P_n.x.array[:] = P_new.x.array
+
+    if self.msh.comm.rank == 0:
+        self.P_time = np.array(P_hist)          # shape (Nt+1, Ndof)
+        self.t_vec  = np.linspace(0.0, self.Tfinal, self.Nt+1)
+
 
 # ==============================================================================
 # SECTION 2: LOGIQUE DE PILOTAGE ADAPTÉE
