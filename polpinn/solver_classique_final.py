@@ -1,15 +1,3 @@
-# ==============================================================================
-#           SCRIPT AUTONOME POUR LA GÉNÉRATION DE DONNÉES DE RÉFÉRENCE (FEM)
-#
-# Version finale intégrant les corrections de conditionnement numérique.
-# - Normalisation du poids géométrique r^2
-# - Stabilisation du solveur linéaire (diagonal shift)
-# - Planchers numériques et rampe sur P0
-#
-# Auteur: Tariq Ouhsine (adapté et corrigé par l'IA)
-# Date: 20/08/2025
-# ==============================================================================
-
 import os
 import numpy as np
 import pickle
@@ -37,8 +25,8 @@ class DataGenerator:
                  T1_in: float, T1_out: float,
                  P0_in: float, P0_out: float,
                  Tfinal: float = 10.,
-                 Nr: int = 100,
-                 Nt: int = 100,
+                 Nr: int = 500,
+                 Nt: int = 2000,
                  tanh_slope: float = 0.,
                  ):
         self.R = R; self.r_max = r_max; self.Tfinal = Tfinal; self.Nr = Nr; self.Nt = Nt
@@ -132,7 +120,7 @@ class DataGenerator:
         # --- Boucle temporelle ---
         if self.msh.comm.rank == 0:
             n_dofs = self.V.dofmap.index_map.size_global
-            # Correction pour s'assurer que r_sorted a la bonne taille en parallèle
+            # pour s'assurer que r_sorted a la bonne taille en parallèle
             if n_dofs == 0: # Si ce proc n'a pas de dofs, il doit recevoir les coords
                  coords = np.empty((0, self.msh.geometry.dim), dtype=np.float64)
                  self.r_sorted = self.msh.comm.bcast(coords, root=0) # Placeholder
