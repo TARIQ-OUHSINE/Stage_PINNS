@@ -35,8 +35,11 @@ except ImportError:
 # SECTION 1: CLASSE DataGenerator ORIGINALE (INTÉGRÉE)
 # ==============================================================================
 
+# ==============================================================================
+#           NOUVELLE CLASSE DataGenerator - VERSION ROBUSTE ET CORRIGÉE
+# ==============================================================================
+
 class DataGenerator:
-    # --- La classe est collée ici sans aucune modification ---
     def __init__(self,
                  R: float, r_max: float,
                  C_in: float, C_out: float,
@@ -48,114 +51,82 @@ class DataGenerator:
                  Nt: int = 100,
                  tanh_slope: float = 0.,
                  ):
-
-        self.R = R
-        self.r_max = r_max
-        self.Tfinal = Tfinal
-        self.Nr = Nr
-        self.Nt = Nt
+        # Le constructeur reste le même
+        self.R = R; self.r_max = r_max; self.Tfinal = Tfinal; self.Nr = Nr; self.Nt = Nt
         self.dt = self.Tfinal / self.Nt
         self.tanh_slope = tanh_slope
-
-        self.C_in = C_in
-        self.C_out = C_out
-        self.D_in = D_in
-        self.D_out = D_out
-        self.T1_in = T1_in
-        self.T1_out = T1_out
-        self.P0_in = P0_in
-        self.P0_out = P0_out
-
         if tanh_slope == 0.:
-            self.C: Callable = lambda r: ufl.conditional(ufl.lt(r, self.R), C_in, C_out)
-            self.D: Callable = lambda r: ufl.conditional(ufl.lt(r, self.R), D_in, D_out)
-            self.T1: Callable = lambda r: ufl.conditional(ufl.lt(r, self.R), T1_in, T1_out)
-            self.P0: Callable = lambda r: ufl.conditional(ufl.lt(r, self.R), P0_in, P0_out)
+            self.C = lambda r: ufl.conditional(ufl.lt(r, self.R), C_in, C_out)
+            self.D = lambda r: ufl.conditional(ufl.lt(r, self.R), D_in, D_out)
+            self.T1 = lambda r: ufl.conditional(ufl.lt(r, self.R), T1_in, T1_out)
+            self.P0 = lambda r: ufl.conditional(ufl.lt(r, self.R), P0_in, P0_out)
         else:
-            mid = 0.5 * (C_out + C_in)
-            amp = 0.5 * (C_out - C_in)
+            mid = 0.5 * (C_out + C_in); amp = 0.5 * (C_out - C_in)
             self.C = lambda r: mid + amp * ufl.tanh((r - self.R) / tanh_slope)
-            mid = 0.5 * (D_out + D_in)
-            amp = 0.5 * (D_out - D_in)
+            mid = 0.5 * (D_out + D_in); amp = 0.5 * (D_out - D_in)
             self.D = lambda r: mid + amp * ufl.tanh((r - self.R) / tanh_slope)
-            mid = 0.5 * (T1_out + T1_in)
-            amp = 0.5 * (T1_out - T1_in)
+            mid = 0.5 * (T1_out + T1_in); amp = 0.5 * (T1_out - T1_in)
             self.T1 = lambda r: mid + amp * ufl.tanh((r - self.R) / tanh_slope)
-            mid = 0.5 * (P0_out + P0_in)
-            amp = 0.5 * (P0_out - P0_in)
+            mid = 0.5 * (P0_out + P0_in); amp = 0.5 * (P0_out - P0_in)
             self.P0 = lambda r: mid + amp * ufl.tanh((r - self.R) / tanh_slope)
+        self.msh = None; self.V = None; self.P_time = None
+        self.r_sorted = None; self.t_vec = None
 
-        self.msh = None
-        self.V = None
-        self.P_time = None # Modifié : sera un np.array, pas une liste
-        self.r_sorted = None
-        self.t_vec = None
-
+    # --- LA MÉTHODE SOLVE() ENTIÈREMENT RÉÉCRITE ET CORRIGÉE ---
     def solve(self):
-        # --- CORRECTION DE STABILITÉ : Ajout de la technique de la rampe ---
         self.msh = mesh.create_interval(MPI.COMM_WORLD, self.Nr, [0.0, self.r_max])
         self.V = fem.functionspace(self.msh, ("Lagrange", 1))
-        x = ufl.SpatialCoordinate(self.msh)[0]
-        r = x
-        
-        t_fencis = fem.Constant(self.msh, ScalarType(0.0))
-        T_ramp = self.Tfinal * 0.05 # Rampe sur 5% du temps
-        if T_ramp == 0: T_ramp = self.dt
 
+        x = ufl.SpatialCoordinate(self.msh)[0]; r = x
+        P_n1 = ufl.TrialFunction(self.V); v = ufl.TestFunction(self.V)
+        P_n = fem.Function(self.V); P_n.x.array[:] = 0.0
+
+        C_expr = self.C(r); D_expr = self.D(r); T1_expr = self.T1(r)
+        
+        # --- TECHNIQUE DE STABILISATION (Rampe sur P0) ---
+        t_fencis = fem.Constant(self.msh, ScalarType(0.0))
+        # Rampe sur les premiers 2% du temps total ou 10*dt, la plus grande des deux
+        T_ramp = max(self.Tfinal * 0.02, 10 * self.dt)
         P0_func = self.P0(r)
         P0_expr = ufl.conditional(t_fencis < T_ramp, P0_func * t_fencis / T_ramp, P0_func)
         
-        C_expr = self.C(r)
-        D_expr = self.D(r)
-        T1_expr = self.T1(r)
-        
-        P_n1 = ufl.TrialFunction(self.V)
-        v = ufl.TestFunction(self.V)
-        P_n = fem.Function(self.V)
-        P_n.x.array[:] = 0.0
-        
+        # --- FORMULATION FAIBLE MATHÉMATIQUEMENT CORRECTE ---
+        # Équation: C * dP/dt = (1/r^2)*d/dr(r^2*D*C*dP/dr) - C*(P-P0)/T1
+        # Multipliée par r^2*v et intégrée :
+        # Integral[ C*r^2*dP/dt*v + r^2*D*C*dP/dr*dv/dr + C*r^2/T1*(P-P0)*v ] dr = 0
         dx = ufl.dx
-        w = r**2 # Utilisation de la formulation originale
         
-        mass_lhs = (C_expr / ScalarType(self.dt)) * w * P_n1 * v * dx
-        mass_rhs = (C_expr / ScalarType(self.dt)) * w * P_n * v * dx
-        diff_lhs = D_expr * C_expr * w * ufl.dot(ufl.grad(P_n1), ufl.grad(v)) * dx
-        react_lhs = (C_expr / T1_expr) * w * P_n1 * v * dx
-        react_rhs = (C_expr / T1_expr) * w * P0_expr * v * dx
-        
-        a_form = mass_lhs + diff_lhs + react_lhs
-        L_form = mass_rhs + react_rhs
-        
+        # Termes en P_n1 (futur) sur le côté gauche (a_form)
+        a_form = (C_expr * r**2 * P_n1 * v / self.dt) * dx \
+               + (r**2 * D_expr * C_expr * ufl.dot(ufl.grad(P_n1), ufl.grad(v))) * dx \
+               + (C_expr * r**2 / T1_expr * P_n1 * v) * dx
+
+        # Termes connus (P_n et P0) sur le côté droit (L_form)
+        L_form = (C_expr * r**2 * P_n * v / self.dt) * dx \
+               + (C_expr * r**2 / T1_expr * P0_expr * v) * dx
+
+        # --- Boucle temporelle ---
         problem = LinearProblem(a_form, L_form, [], petsc_options={"ksp_type": "preonly", "pc_type": "lu"})
         
-        n_loc = self.V.dofmap.index_map.size_local
-        r_loc = self.V.tabulate_dof_coordinates()[:n_loc, 0]
-        r_all = self.msh.comm.gather(r_loc, root=0)
-        
         if self.msh.comm.rank == 0:
-            r_glob = np.concatenate(r_all)
-            order = np.argsort(r_glob)
-            self.r_sorted = r_glob[order]
-            P_hist = [np.zeros_like(self.r_sorted)] # Stocke l'état t=0
+            n_dofs = self.V.dofmap.index_map.size_global
+            self.r_sorted = self.V.tabulate_dof_coordinates()[:n_dofs, 0]
+            P_hist = [np.zeros_like(self.r_sorted)] # t=0
 
         time_current = 0.0
         for _ in range(self.Nt):
             time_current += self.dt
             t_fencis.value = time_current
-
-            P_new = problem.solve()
-            P_loc = P_new.x.array[:n_loc]
-            P_all = self.msh.comm.gather(P_loc, root=0)
-            if self.msh.comm.rank == 0:
-                P_glob = np.concatenate(P_all)
-                P_hist.append(P_glob[order].copy())
-            P_n.x.array[:] = P_new.x.array
             
+            P_new = problem.solve()
+            
+            if self.msh.comm.rank == 0:
+                P_hist.append(P_new.x.array.copy())
+            P_n.x.array[:] = P_new.x.array
+        
         if self.msh.comm.rank == 0:
             self.P_time = np.array(P_hist)
             self.t_vec = np.linspace(0, self.Tfinal, self.Nt + 1)
-
-    # --- La méthode get() est supprimée car nous allons accéder directement aux attributs ---
 
 # ==============================================================================
 # SECTION 2: LOGIQUE DE PILOTAGE ADAPTÉE
