@@ -38,6 +38,12 @@ except ImportError:
 # ==============================================================================
 #           NOUVELLE CLASSE DataGenerator - VERSION ROBUSTE ET CORRIGÉE
 # ==============================================================================
+from mpi4py import MPI
+import numpy as np
+import ufl
+from petsc4py.PETSc import ScalarType
+from dolfinx import mesh, fem
+from dolfinx.fem.petsc import LinearProblem
 
 class DataGenerator:
     def __init__(self,
@@ -46,123 +52,132 @@ class DataGenerator:
                  D_in: float, D_out: float,
                  T1_in: float, T1_out: float,
                  P0_in: float, P0_out: float,
-                 Tfinal: float = 10.,
+                 Tfinal: float = 10.0,
                  Nr: int = 100,
                  Nt: int = 100,
-                 tanh_slope: float = 0.,
-                 ):
-        # Le constructeur reste le même
-        self.R = R; self.r_max = r_max; self.Tfinal = Tfinal; self.Nr = Nr; self.Nt = Nt
+                 tanh_slope: float = 0.0):
+        # stocke aussi les scalaires (utile pour export / debug)
+        self.R = float(R)
+        self.r_max = float(r_max)
+        self.C_in, self.C_out = float(C_in), float(C_out)
+        self.D_in, self.D_out = float(D_in), float(D_out)
+        self.T1_in, self.T1_out = float(T1_in), float(T1_out)
+        self.P0_in, self.P0_out = float(P0_in), float(P0_out)
+        self.Tfinal = float(Tfinal)
+        self.Nr = int(Nr)
+        self.Nt = int(Nt)
         self.dt = self.Tfinal / self.Nt
-        self.tanh_slope = tanh_slope
-        if tanh_slope == 0.:
-            self.C = lambda r: ufl.conditional(ufl.lt(r, self.R), C_in, C_out)
-            self.D = lambda r: ufl.conditional(ufl.lt(r, self.R), D_in, D_out)
-            self.T1 = lambda r: ufl.conditional(ufl.lt(r, self.R), T1_in, T1_out)
-            self.P0 = lambda r: ufl.conditional(ufl.lt(r, self.R), P0_in, P0_out)
+        self.tanh_slope = float(tanh_slope)
+
+        # Profils radiaux (net / tanh régularisé)
+        if tanh_slope == 0.0:
+            self.C  = lambda r: ufl.conditional(ufl.lt(r, self.R), self.C_in,  self.C_out)
+            self.D  = lambda r: ufl.conditional(ufl.lt(r, self.R), self.D_in,  self.D_out)
+            self.T1 = lambda r: ufl.conditional(ufl.lt(r, self.R), self.T1_in, self.T1_out)
+            self.P0 = lambda r: ufl.conditional(ufl.lt(r, self.R), self.P0_in, self.P0_out)
         else:
-            mid = 0.5 * (C_out + C_in); amp = 0.5 * (C_out - C_in)
-            self.C = lambda r: mid + amp * ufl.tanh((r - self.R) / tanh_slope)
-            mid = 0.5 * (D_out + D_in); amp = 0.5 * (D_out - D_in)
-            self.D = lambda r: mid + amp * ufl.tanh((r - self.R) / tanh_slope)
-            mid = 0.5 * (T1_out + T1_in); amp = 0.5 * (T1_out - T1_in)
-            self.T1 = lambda r: mid + amp * ufl.tanh((r - self.R) / tanh_slope)
-            mid = 0.5 * (P0_out + P0_in); amp = 0.5 * (P0_out - P0_in)
-            self.P0 = lambda r: mid + amp * ufl.tanh((r - self.R) / tanh_slope)
-        self.msh = None; self.V = None; self.P_time = None
-        self.r_sorted = None; self.t_vec = None
+            def _tanh_blend(a_in, a_out):
+                mid = 0.5 * (a_out + a_in)
+                amp = 0.5 * (a_out - a_in)
+                return lambda r: mid + amp * ufl.tanh((r - self.R) / self.tanh_slope)
+            self.C  = _tanh_blend(self.C_in,  self.C_out)
+            self.D  = _tanh_blend(self.D_in,  self.D_out)
+            self.T1 = _tanh_blend(self.T1_in, self.T1_out)
+            self.P0 = _tanh_blend(self.P0_in, self.P0_out)
 
-def solve(self):
-    # Maillage et espace
-    self.msh = mesh.create_interval(MPI.COMM_WORLD, self.Nr, [0.0, self.r_max])
-    self.V = fem.functionspace(self.msh, ("Lagrange", 1))
+        # sorties
+        self.P_time = None  # (Nt+1, Ndof triés)
+        self.r_sorted = None
+        self.t_vec = None
 
-    # Coordonnée radiale et poids régularisé
-    x = ufl.SpatialCoordinate(self.msh)[0]
-    r = x
-    h = self.r_max / self.Nr
-    eps_w = ScalarType((0.5*h)**2)      # régularisation minimale du centre
-    w = r**2 + eps_w
+    def solve(self):
+        # Maillage 1D [0, r_max]
+        msh = mesh.create_interval(MPI.COMM_WORLD, self.Nr, [0.0, self.r_max])
+        V = fem.functionspace(msh, ("Lagrange", 1))
 
-    # Coefficients (avec planchers de sûreté)
-    C_expr_raw = self.C(r)
-    D_expr_raw = self.D(r)
-    T1_expr_raw = self.T1(r)
-    P0_func = self.P0(r)
+        # Coordonnée radiale et poids régularisé au centre
+        x = ufl.SpatialCoordinate(msh)[0]
+        r = x
+        h = self.r_max / self.Nr
+        eps_w = ScalarType((0.5 * h) ** 2)  # petit plancher ~ h^2
+        w = r**2 + eps_w
 
-    # planchers numériques (max_value côté UFL)
-    C_expr  = ufl.max_value(C_expr_raw, ScalarType(1.0))        # si jamais C→0
-    D_expr  = ufl.max_value(D_expr_raw, ScalarType(1e-18))       # D très petit → plancher
-    T1_expr = ufl.max_value(T1_expr_raw, ScalarType(1e-3))       # T1 très petit → plancher
+        # Coeffs avec "planchers" de sûreté (robustesse numérique)
+        C_raw = self.C(r)
+        D_raw = self.D(r)
+        T1_raw = self.T1(r)
+        C_expr  = ufl.max_value(C_raw,  ScalarType(1.0))
+        D_expr  = ufl.max_value(D_raw,  ScalarType(1e-18))
+        T1_expr = ufl.max_value(T1_raw, ScalarType(1e-3))
+        P0_func = self.P0(r)
 
-    # Rampe sur P0
-    t_now = fem.Constant(self.msh, ScalarType(0.0))
-    T_ramp = max(self.Tfinal * 0.02, 10 * (self.Tfinal/self.Nt))
-    P0_eff = ufl.conditional(t_now < T_ramp,
-                             P0_func * (t_now / ScalarType(T_ramp)),
-                             P0_func)
+        # Rampe sur P0 pour éviter un choc initial trop fort
+        t_now = fem.Constant(msh, ScalarType(0.0))
+        T_ramp = max(self.Tfinal * 0.02, 10 * self.dt)
+        P0_eff = ufl.conditional(t_now < T_ramp,
+                                 P0_func * (t_now / ScalarType(T_ramp)),
+                                 P0_func)
 
-    # Inconnues et test
-    P_n1 = ufl.TrialFunction(self.V)
-    v    = ufl.TestFunction(self.V)
-    P_n  = fem.Function(self.V)
-    P_n.x.array[:] = 0.0
+        # Inconnues/test
+        P_n1 = ufl.TrialFunction(V)
+        v    = ufl.TestFunction(V)
+        P_n  = fem.Function(V)
+        P_n.x.array[:] = 0.0
 
-    dx = ufl.dx
+        dx = ufl.dx
+        dt = ScalarType(self.dt)
 
-    # Schéma implicite (Euler)
-    dt = ScalarType(self.dt)
-    mass_lhs = (C_expr/dt) * w * P_n1 * v * dx
-    mass_rhs = (C_expr/dt) * w * P_n   * v * dx
-    diff_lhs = (D_expr*C_expr) * w * ufl.dot(ufl.grad(P_n1), ufl.grad(v)) * dx
-    reac_lhs = (C_expr/T1_expr) * w * P_n1 * v * dx
-    reac_rhs = (C_expr/T1_expr) * w * P0_eff * v * dx
+        # Schéma implicite (Euler)
+        mass_lhs = (C_expr / dt) * w * P_n1 * v * dx
+        mass_rhs = (C_expr / dt) * w * P_n  * v * dx
+        diff_lhs = (D_expr * C_expr) * w * ufl.dot(ufl.grad(P_n1), ufl.grad(v)) * dx
+        reac_lhs = (C_expr / T1_expr) * w * P_n1 * v * dx
+        reac_rhs = (C_expr / T1_expr) * w * P0_eff * v * dx
 
-    a_form = mass_lhs + diff_lhs + reac_lhs
-    L_form = mass_rhs + reac_rhs
+        a_form = mass_lhs + diff_lhs + reac_lhs
+        L_form = mass_rhs + reac_rhs
 
-    # Problème linéaire (tu peux garder LU si la régularisation est en place)
-    problem = LinearProblem(
-        a_form, L_form, [],
-        petsc_options={
-            "ksp_type": "preonly",
-            "pc_type": "lu",
-            # "mat_mumps_icntl_24": 1,  # si MUMPS dispo, tolérance pivot
-        }
-    )
+        # Problème linéaire
+        problem = LinearProblem(
+            a_form, L_form, [],
+            petsc_options={
+                "ksp_type": "preonly",
+                "pc_type": "lu",
+            }
+        )
 
-    # Prépare l’ordonnancement global des dofs pour le rank 0
-    n_loc = self.V.dofmap.index_map.size_local
-    r_loc = self.V.tabulate_dof_coordinates()[:n_loc, 0]
-    r_all = self.msh.comm.gather(r_loc, root=0)
-    if self.msh.comm.rank == 0:
-        r_glob = np.concatenate(r_all)
-        order = np.argsort(r_glob)
-        self.r_sorted = r_glob[order]
-        P_hist = [np.zeros_like(self.r_sorted)]
+        # Prépare collecte r/P
+        n_loc = V.dofmap.index_map.size_local
+        r_loc = V.tabulate_dof_coordinates()[:n_loc, 0]
+        r_all = msh.comm.gather(r_loc, root=0)
 
-    # Boucle en temps + rampe
-    t = 0.0
-    for _ in range(self.Nt):
-        t += float(self.dt)
-        t_now.value = ScalarType(t)
+        if msh.comm.rank == 0:
+            r_glob = np.concatenate(r_all)
+            order = np.argsort(r_glob)
+            self.r_sorted = r_glob[order]
+            P_hist = [np.zeros_like(self.r_sorted)]
 
-        P_new = problem.solve()
+        # Boucle temps
+        t = 0.0
+        for _ in range(self.Nt):
+            t += float(self.dt)
+            t_now.value = ScalarType(t)
 
-        # rassembler sur le rang 0
-        P_loc = P_new.x.array[:n_loc]
-        P_all = self.msh.comm.gather(P_loc, root=0)
-        if self.msh.comm.rank == 0:
-            P_glob = np.concatenate(P_all)[order]
-            # garde une copie
-            P_hist.append(P_glob.copy())
+            P_new = problem.solve()
 
-        # état suivant
-        P_n.x.array[:] = P_new.x.array
+            P_loc = P_new.x.array[:n_loc]
+            P_all = msh.comm.gather(P_loc, root=0)
+            if msh.comm.rank == 0:
+                P_glob = np.concatenate(P_all)[order]
+                P_hist.append(P_glob.copy())
 
-    if self.msh.comm.rank == 0:
-        self.P_time = np.array(P_hist)          # shape (Nt+1, Ndof)
-        self.t_vec  = np.linspace(0.0, self.Tfinal, self.Nt+1)
+            # avance
+            P_n.x.array[:] = P_new.x.array
+
+        if msh.comm.rank == 0:
+            self.P_time = np.array(P_hist)  # (Nt+1, Ndof)
+            self.t_vec = np.linspace(0.0, self.Tfinal, self.Nt + 1)
+
 
 
 # ==============================================================================
