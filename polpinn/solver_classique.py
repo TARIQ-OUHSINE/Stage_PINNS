@@ -176,11 +176,6 @@ class DataGenerator:
 
 
 
-from importlib import reload
-import data_generator
-reload(data_generator)
-from data_generator import DataGenerator
-
 print("solve present? ", hasattr(DataGenerator, "solve"))  # doit être True
 
 gen = DataGenerator(
