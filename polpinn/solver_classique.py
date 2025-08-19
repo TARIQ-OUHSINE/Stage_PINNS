@@ -232,8 +232,8 @@ def main(args):
                 "P0_in": params["P0_f"],
                 "P0_out": params["P0_j"],
                 "Tfinal": params["def_t"],
-                "Nr": 200,          # Résolution spatiale (r)
-                "Nt": 200,          # Résolution temporelle (t)
+                "Nr": 1000,          # Résolution spatiale (r)
+                "Nt": 1000,          # Résolution temporelle (t)
                 "tanh_slope": params["R_vrai_m"] * 0.05
             }
 
