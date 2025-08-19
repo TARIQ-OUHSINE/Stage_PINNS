@@ -44,12 +44,19 @@ except ImportError as e:
 # ==============================================================================
 # SECTION 1: LE SOLVEUR NUMÉRIQUE (CLASSE DataGenerator - Inchangée)
 # ==============================================================================
+from mpi4py import MPI
+import numpy as np
+import ufl
+from petsc4py.PETSc import ScalarType
+from dolfinx import mesh, fem
+from dolfinx.fem.petsc import LinearProblem
+import torch
+from torch import Tensor
+from collections.abc import Callable
+import os
+
 
 class DataGenerator:
-    """
-    Solveur numérique basé sur la Méthode des Éléments Finis (FEM) avec FEniCSx
-    pour l'équation de diffusion-relaxation en géométrie sphérique.
-    """
     def __init__(self,
                  R: float, r_max: float,
                  C_in: float, C_out: float,
@@ -61,6 +68,7 @@ class DataGenerator:
                  Nt: int = 100,
                  tanh_slope: float = 0.,
                  ):
+
         self.R = R
         self.r_max = r_max
         self.Tfinal = Tfinal
@@ -68,6 +76,15 @@ class DataGenerator:
         self.Nt = Nt
         self.dt = self.Tfinal / self.Nt
         self.tanh_slope = tanh_slope
+
+        self.C_in = C_in
+        self.C_out = C_out
+        self.D_in = D_in
+        self.D_out = D_out
+        self.T1_in = T1_in
+        self.T1_out = T1_out
+        self.P0_in = P0_in
+        self.P0_out = P0_out
 
         if tanh_slope == 0.:
             self.C: Callable = lambda r: ufl.conditional(ufl.lt(r, self.R), C_in, C_out)
@@ -90,7 +107,7 @@ class DataGenerator:
 
         self.msh = None
         self.V = None
-        self.P_time = None
+        self.P_time = []
         self.r_sorted = None
         self.t_vec = None
 
@@ -108,6 +125,7 @@ class DataGenerator:
         v = ufl.TestFunction(self.V)
         P_n = fem.Function(self.V)
         P_n.x.array[:] = 0.0
+        self.P_time.append(P_n)
         dx = ufl.dx
         mass_lhs = (C_expr / ScalarType(self.dt)) * w * P_n1 * v * dx
         mass_rhs = (C_expr / ScalarType(self.dt)) * w * P_n * v * dx
@@ -123,13 +141,11 @@ class DataGenerator:
         n_loc = self.V.dofmap.index_map.size_local
         r_loc = self.V.tabulate_dof_coordinates()[:n_loc, 0]
         r_all = self.msh.comm.gather(r_loc, root=0)
-
         if self.msh.comm.rank == 0:
             r_glob = np.concatenate(r_all)
             order = np.argsort(r_glob)
             self.r_sorted = r_glob[order]
             P_hist = []
-
         t = 0.0
         for _ in range(self.Nt):
             t += self.dt
@@ -140,17 +156,71 @@ class DataGenerator:
                 P_glob = np.concatenate(P_all)
                 P_hist.append(P_glob[order].copy())
             P_n.x.array[:] = P_new.x.array
-        
         if self.msh.comm.rank == 0:
             self.P_time = np.array(P_hist)
             self.t_vec = np.linspace(self.dt, self.Tfinal, self.Nt)
 
-    def get(self) -> dict:
+    def plot(self, dir: str = "data/plot"):
         if self.msh.comm.rank == 0:
-            if self.P_time is None: return {}
-            return {"P_rt": self.P_time, "r": self.r_sorted, "t": self.t_vec}
-        return {}
+            if self.P_time is None or self.r_sorted is None or self.t_vec is None:
+                return
+            import matplotlib.pyplot as plt
+            os.makedirs(dir, exist_ok=True)
+            plt.figure(figsize=(8, 5))
+            plt.imshow(self.P_time,
+                       extent=[0.0, self.r_max, 0.0, self.Tfinal],
+                       origin="lower",
+                       aspect="auto",
+                       cmap="viridis")
+            plt.colorbar(label=r"$P(r,t)$")
+            plt.xlabel(r"$r$ (m)")
+            plt.ylabel(r"$t$ (s)")
+            plt.title("Évolution de la polarisation P(r,t)")
+            plt.tight_layout()
+            filename = f"{dir}/{self.R}_{self.C_in}_{self.C_out}_{self.D_in}_{self.D_out}_{self.P0_in}_{self.P0_out}_{self.T1_in}_{self.T1_out}.png"
+            plt.savefig(filename, dpi=180)
 
+    def get(self) -> dict[str, Tensor | float | int]:
+        if self.msh.comm.rank == 0:
+            P_tensor = torch.tensor(self.P_time, dtype=torch.float32)
+            r = self.r_sorted
+            idx_cut = np.searchsorted(r, self.R, side='right')
+            G_vals = []
+            for line in self.P_time:
+                r_sub = r[:idx_cut]
+                P_sub = line[:idx_cut]
+                if r_sub[-1] < self.R:
+                    if idx_cut < len(r):
+                        r1, r2 = r[idx_cut - 1], r[idx_cut]
+                        P1, P2 = line[idx_cut - 1], line[idx_cut]
+                        P_R = P1 + (P2 - P1) * (self.R - r1) / (r2 - r1)
+                    else:
+                        P_R = P_sub[-1]
+                    r_sub = np.append(r_sub, self.R)
+                    P_sub = np.append(P_sub, P_R)
+                G = 3.0 / (self.R ** 3) * np.trapz(P_sub * (r_sub ** 2), r_sub)
+                G_vals.append(G)
+            G_tensor = torch.tensor(G_vals, dtype=torch.float32)
+            to_send: dict[str, Tensor | float | int] = {
+                "P": P_tensor,
+                "G_R": G_tensor,
+                "r_max": self.r_max,
+                "Tfinal": self.Tfinal,
+                "Nr": self.Nr,
+                "Nt": self.Nt,
+                "dt": self.dt,
+                "C_in": self.C_in,
+                "C_out": self.C_out,
+                "D_in": self.D_in,
+                "D_out": self.D_out,
+                "T1_in": self.T1_in,
+                "T1_out": self.T1_out,
+                "P0_in": self.P0_in,
+                "P0_out": self.P0_out,
+                "R": self.R
+            }
+            return to_send
+        return {}
 
 # ==============================================================================
 # SECTION 2: LOGIQUE DE PILOTAGE DES SIMULATIONS (Adaptée au workflow PINN)
@@ -241,6 +311,7 @@ def main(args):
             if rank == 0: print("   Configuration et lancement de la simulation FEM...")
             solver = DataGenerator(**params_solver)
             solver.solve()
+            solver.plot()
             
             # 4. Récupération et sauvegarde des résultats
             results = solver.get()
