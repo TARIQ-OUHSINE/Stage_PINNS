@@ -111,44 +111,77 @@ class DataGenerator:
         self.r_sorted = None
         self.t_vec = None
 
+
     def solve(self):
         self.msh = mesh.create_interval(MPI.COMM_WORLD, self.Nr, [0.0, self.r_max])
         self.V = fem.functionspace(self.msh, ("Lagrange", 1))
+
+        # --- Définition de la géométrie et des fonctions ---
         x = ufl.SpatialCoordinate(self.msh)[0]
         r = x
-        w = r**2
+        
+        # Le terme géométrique 4*pi*r^2 sera inclus dans l'intégrale via dx_geom
+        # Note : pour un problème 1D, ufl.dx est suffisant si on intègre le Laplacien complet.
+        # Nous allons construire l'équation de Fick 1D radiale manuellement pour être plus clair.
+        # C*dP/dt = (1/r^2) * d/dr(r^2 * D * C * dP/dr) - C*(P-P0)/T1
+        # Multiplions par r^2 :
+        # C*r^2*dP/dt = d/dr(r^2 * D * C * dP/dr) - C*r^2*(P-P0)/T1
+
         C_expr = self.C(r)
         D_expr = self.D(r)
         T1_expr = self.T1(r)
         P0_expr = self.P0(r)
-        P_n1 = ufl.TrialFunction(self.V)
-        v = ufl.TestFunction(self.V)
-        P_n = fem.Function(self.V)
-        P_n.x.array[:] = 0.0
-        self.P_time.append(P_n)
+
+        P_n1 = ufl.TrialFunction(self.V)  # Solution inconnue P à t_{n+1}
+        v = ufl.TestFunction(self.V)     # Fonction test
+        P_n = fem.Function(self.V)       # Solution connue P à t_n
+        P_n.x.array[:] = 0.0             # Condition initiale
+
+        # --- Définition de la formulation faible CORRECTE ---
+        # Note : dx est l'élément de mesure dr
         dx = ufl.dx
-        mass_lhs = (C_expr / ScalarType(self.dt)) * w * P_n1 * v * dx
-        mass_rhs = (C_expr / ScalarType(self.dt)) * w * P_n * v * dx
-        diff_lhs = D_expr * C_expr * w * ufl.dot(ufl.grad(P_n1), ufl.grad(v)) * dx
-        react_lhs = (C_expr / T1_expr) * w * P_n1 * v * dx
-        react_rhs = (C_expr / T1_expr) * w * P0_expr * v * dx
-        a_form = mass_lhs + diff_lhs + react_lhs
-        L_form = mass_rhs + react_rhs
+
+        # Terme de masse : C * r^2 * (P_n1 - P_n)/dt * v * dx
+        mass_term = C_expr * r**2 * (P_n1 - P_n) / self.dt * v * dx
+
+        # Terme de diffusion (après intégration par parties) : - (r^2*D*C*dP/dr) * dv/dr * dx
+        # ufl.grad(f) en 1D est juste df/dr
+        diff_term = r**2 * D_expr * C_expr * ufl.dot(ufl.grad(P_n1), ufl.grad(v)) * dx
+
+        # Terme de relaxation : - C * r^2 * (P - P0)/T1 * v * dx
+        react_term = C_expr * r**2 * (P_n1 - P0_expr) / T1_expr * v * dx
+        
+        # L'équation résiduelle F(P_n1) = 0 est :
+        # mass_term + diff_term + react_term - C*r^2*(P_n - P0)/T1 ... Non, plus simple.
+        # On regroupe les termes en P_n1 (gauche) et P_n (droite).
+        
+        # Côté gauche (termes en P_n1)
+        a_form = (C_expr * r**2 / self.dt * P_n1 * v) * dx \
+               + (r**2 * D_expr * C_expr * ufl.dot(ufl.grad(P_n1), ufl.grad(v))) * dx \
+               + (C_expr * r**2 / T1_expr * P_n1 * v) * dx
+
+        # Côté droit (termes connus)
+        L_form = (C_expr * r**2 / self.dt * P_n * v) * dx \
+               + (C_expr * r**2 / T1_expr * P0_expr * v) * dx
+
+        # --- Résolution ---
         problem = LinearProblem(
             a_form, L_form, [],
             petsc_options={"ksp_type": "preonly", "pc_type": "lu"}
         )
+        
+        # Le reste du code est inchangé
         n_loc = self.V.dofmap.index_map.size_local
         r_loc = self.V.tabulate_dof_coordinates()[:n_loc, 0]
         r_all = self.msh.comm.gather(r_loc, root=0)
+
         if self.msh.comm.rank == 0:
             r_glob = np.concatenate(r_all)
             order = np.argsort(r_glob)
             self.r_sorted = r_glob[order]
             P_hist = []
-        t = 0.0
+
         for _ in range(self.Nt):
-            t += self.dt
             P_new = problem.solve()
             P_loc = P_new.x.array[:n_loc]
             P_all = self.msh.comm.gather(P_loc, root=0)
@@ -156,9 +189,12 @@ class DataGenerator:
                 P_glob = np.concatenate(P_all)
                 P_hist.append(P_glob[order].copy())
             P_n.x.array[:] = P_new.x.array
+        
         if self.msh.comm.rank == 0:
             self.P_time = np.array(P_hist)
-            self.t_vec = np.linspace(self.dt, self.Tfinal, self.Nt)
+            # On ajoute un pas de temps initial à t=0 pour que les dimensions correspondent
+            self.P_time = np.vstack([np.zeros(len(self.r_sorted)), self.P_time]) 
+            self.t_vec = np.linspace(0, self.Tfinal, self.Nt + 1)
 
     def plot(self, dir: str = "data/plot"):
         if self.msh.comm.rank == 0:
@@ -281,9 +317,9 @@ def main(args):
                 "T1_out": params["T_1_j"],
                 "P0_in": params["P0_f"],
                 "P0_out": params["P0_j"],
-                "Tfinal": 0.1,
+                "Tfinal": params["def_t"],
                 "Nr": 500,          # Résolution spatiale (r)
-                "Nt": 2000,          # Résolution temporelle (t)
+                "Nt": 500,          # Résolution temporelle (t)
                 "tanh_slope": params["R_vrai_m"] * 0.05
             }
 
