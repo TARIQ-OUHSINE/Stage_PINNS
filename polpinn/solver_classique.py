@@ -284,7 +284,7 @@ def main(args):
                 "Tfinal": params["def_t"],
                 "Nr": 1000,          # Résolution spatiale (r)
                 "Nt": 1000,          # Résolution temporelle (t)
-                "tanh_slope": params["R_vrai_m"] * 0
+                "tanh_slope": params["R_vrai_m"] * 0.05
             }
 
             # 3. Lancement du solveur
