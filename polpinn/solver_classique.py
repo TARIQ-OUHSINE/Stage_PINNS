@@ -180,44 +180,24 @@ class DataGenerator:
             filename = f"{dir}/{self.R}_{self.C_in}_{self.C_out}_{self.D_in}_{self.D_out}_{self.P0_in}_{self.P0_out}_{self.T1_in}_{self.T1_out}.png"
             plt.savefig(filename, dpi=180)
 
-    def get(self):
+
+    # REMPLACEZ L'ANCIENNE MÉTHODE 'get' PAR CELLE-CI :
+    def get(self) -> dict:
+        """
+        Retourne les résultats de la simulation sous forme de dictionnaire simple.
+        Cette fonction est conçue pour être appelée en parallèle : seul le
+        processeur de rang 0 renverra des données.
+        """
         if self.msh.comm.rank == 0:
-            P_tensor = torch.tensor(self.P_time, dtype=torch.float32)
-            r = self.r_sorted
-            idx_cut = np.searchsorted(r, self.R, side='right')
-            G_vals = []
-            for line in self.P_time:
-                r_sub = r[:idx_cut]
-                P_sub = line[:idx_cut]
-                if r_sub[-1] < self.R:
-                    if idx_cut < len(r):
-                        r1, r2 = r[idx_cut - 1], r[idx_cut]
-                        P1, P2 = line[idx_cut - 1], line[idx_cut]
-                        P_R = P1 + (P2 - P1) * (self.R - r1) / (r2 - r1)
-                    else:
-                        P_R = P_sub[-1]
-                    r_sub = np.append(r_sub, self.R)
-                    P_sub = np.append(P_sub, P_R)
-                G = 3.0 / (self.R ** 3) * np.trapz(P_sub * (r_sub ** 2), r_sub)
-                G_vals.append(G)
-            G_tensor = torch.tensor(G_vals, dtype=torch.float32)
-            to_send: dict[str, Tensor | float | int] = {
-                "P": P_tensor,
-                "G_R": G_tensor,
-                "r_max": self.r_max,
-                "Tfinal": self.Tfinal,
-                "Nr": self.Nr,
-                "Nt": self.Nt,
-                "dt": self.dt,
-                "C_in": self.C_in,
-                "C_out": self.C_out,
-                "D_in": self.D_in,
-                "D_out": self.D_out,
-                "T1_in": self.T1_in,
-                "T1_out": self.T1_out,
-                "P0_in": self.P0_in,
-                "P0_out": self.P0_out,
-                "R": self.R
+            # Vérifie que la simulation a bien tourné
+            if self.P_time is None or self.r_sorted is None or self.t_vec is None:
+                return {}
+                
+            # On retourne un dictionnaire propre avec les bonnes clés
+            to_send = {
+                "P_rt": self.P_time, # La matrice de solution
+                "r": self.r_sorted,  # Le vecteur des rayons
+                "t": self.t_vec      # Le vecteur des temps
             }
             return to_send
         return {}
