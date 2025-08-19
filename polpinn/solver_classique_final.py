@@ -67,59 +67,93 @@ class DataGenerator:
         self.msh = None; self.V = None; self.P_time = None
         self.r_sorted = None; self.t_vec = None
 
+
+    # ==============================================================================
     def solve(self):
         self.msh = mesh.create_interval(MPI.COMM_WORLD, self.Nr, [0.0, self.r_max])
         self.V = fem.functionspace(self.msh, ("Lagrange", 1))
 
+        # --- Définition des variables et fonctions ---
         x = ufl.SpatialCoordinate(self.msh)[0]; r = x
-        P_n1 = ufl.TrialFunction(self.V); v = ufl.TestFunction(self.V)
-        P_n = fem.Function(self.V); P_n.x.array[:] = 0.0
+        P_n1 = ufl.TrialFunction(self.V)  # Inconnue P au temps t_{n+1}
+        v = ufl.TestFunction(self.V)     # Fonction test
+        P_n = fem.Function(self.V)       # Solution connue au temps t_n
+        P_n.x.array[:] = 0.0             # Condition initiale P(r, 0) = 0
 
-        C_expr = self.C(r); D_expr = self.D(r); T1_expr = self.T1(r)
+        # --- Coefficients physiques ---
+        C_expr = self.C(r)
+        D_expr = self.D(r)
+        T1_expr = self.T1(r)
         
+        # --- Garde-fou 1 : Rampe sur la polarisation d'équilibre P0 ---
+        # On fait monter P0 de 0 à sa valeur finale pour éviter un choc initial
         t_fencis = fem.Constant(self.msh, ScalarType(0.0))
+        # La rampe dure 2% du temps total ou 10 pas de temps (on prend le plus long)
         T_ramp = max(self.Tfinal * 0.02, 10 * self.dt)
         P0_func = self.P0(r)
         P0_expr = ufl.conditional(t_fencis < T_ramp, P0_func * t_fencis / T_ramp, P0_func)
         
-        # --- Garde-fou : Normalisation du poids géométrique ---
-        h = self.r_max / self.Nr
-        eps_w = (0.5 * h)**2
-        w_norm = (r**2 + eps_w) / self.r_max**2 # Normalisation pour le conditionnement
+        
+        # --- Formulation Faible (Variationnelle) ---
+        # L'équation physique est :
+        # C * dP/dt - Div(D*C*Grad(P)) = - C/T1 * (P - P0)
+        #
+        # Après discrétisation en temps (Euler implicite) :
+        # C*(P_n1 - P_n)/dt - Div(D*C*Grad(P_n1)) = - C/T1 * (P_n1 - P0)
+        #
+        # On regroupe les termes inconnus (en P_n1) à gauche et les termes connus à droite :
+        # C/dt*P_n1 - Div(D*C*Grad(P_n1)) + C/T1*P_n1 = C/dt*P_n + C/T1*P0
+        #
+        # Après multiplication par r^2*v, intégration et intégration par parties du terme de divergence :
+        # Int[ C/dt*r^2*P_n1*v + D*C*r^2*Grad(P_n1)*Grad(v) + C/T1*r^2*P_n1*v ]dr = Int[ C/dt*r^2*P_n*v + C/T1*r^2*P0*v ]dr
 
-        # --- Formulation faible correcte, mais avec le poids normalisé w_norm ---
-        # On multiplie l'équation originale par w_norm * v
         dx = ufl.dx
         
-        a_form = (w_norm * C_expr * P_n1 * v / self.dt) * dx \
-               + (w_norm * D_expr * C_expr * ufl.dot(ufl.grad(P_n1), ufl.grad(v))) * dx \
-               + (w_norm * C_expr / T1_expr * P_n1 * v) * dx \
-               - (ufl.grad(w_norm)[0] * D_expr * C_expr * P_n1 * v) * dx # Terme issu de l'intégration par parties de grad(w*grad(P))
+        # Côté gauche de l'équation (forme bilinéaire a_form, dépend de P_n1 et v)
+        a_form = (C_expr * r**2 * P_n1 * v / self.dt) * dx \
+               + (r**2 * D_expr * C_expr * ufl.dot(ufl.grad(P_n1), ufl.grad(v))) * dx \
+               + (C_expr * r**2 / T1_expr * P_n1 * v) * dx
 
-        L_form = (w_norm * C_expr * P_n * v / self.dt) * dx \
-               + (w_norm * C_expr / T1_expr * P0_expr * v) * dx
-
-        # --- Garde-fou : Stabilisation du solveur PETSc ---
+        # Côté droit de l'équation (forme linéaire L_form, dépend de P_n, P0 et v)
+        L_form = (C_expr * r**2 * P_n * v / self.dt) * dx \
+               + (C_expr * r**2 / T1_expr * P0_expr * v) * dx
+               
+        # --- Garde-fou 2 : Stabilisation du solveur linéaire (PETSc) ---
+        # Évite les erreurs de pivot nul, surtout au premier pas de temps
         petsc_opts = {
             "ksp_type": "preonly",
             "pc_type": "lu",
             "pc_factor_shift_type": "NONZERO",
-            "pc_factor_shift_amount": 1e-12, # On ajoute une petite valeur à la diagonale
+            "pc_factor_shift_amount": 1e-12,
         }
 
         problem = LinearProblem(a_form, L_form, [], petsc_options=petsc_opts)
         
+        # --- Boucle temporelle ---
         if self.msh.comm.rank == 0:
             n_dofs = self.V.dofmap.index_map.size_global
-            self.r_sorted = self.V.tabulate_dof_coordinates()[:n_dofs, 0]
-            P_hist = [np.zeros_like(self.r_sorted)]
+            # Correction pour s'assurer que r_sorted a la bonne taille en parallèle
+            if n_dofs == 0: # Si ce proc n'a pas de dofs, il doit recevoir les coords
+                 coords = np.empty((0, self.msh.geometry.dim), dtype=np.float64)
+                 self.r_sorted = self.msh.comm.bcast(coords, root=0) # Placeholder
+            else:
+                 self.r_sorted = self.V.tabulate_dof_coordinates()[:n_dofs, 0]
+
+            P_hist = [np.zeros_like(self.r_sorted)] # On stocke l'état initial t=0
 
         time_current = 0.0
         for _ in range(self.Nt):
+            # Mise à jour de la constante temps pour la rampe
             time_current += self.dt
             t_fencis.value = time_current
+            
             P_new = problem.solve()
-            if self.msh.comm.rank == 0: P_hist.append(P_new.x.array.copy())
+            
+            # Seul le processus root (rang 0) stocke l'historique
+            if self.msh.comm.rank == 0:
+                P_hist.append(P_new.x.array.copy())
+
+            # Mise à jour de la solution pour le pas de temps suivant
             P_n.x.array[:] = P_new.x.array
         
         if self.msh.comm.rank == 0:
@@ -127,7 +161,7 @@ class DataGenerator:
             self.t_vec = np.linspace(0, self.Tfinal, self.Nt + 1)
 
 # ==============================================================================
-# SECTION 2: LOGIQUE DE PILOTAGE (INCHANGÉE)
+# SECTION 2: LOGIQUE DE PILOTAGE
 # ==============================================================================
 def main(args):
     comm = MPI.COMM_WORLD
