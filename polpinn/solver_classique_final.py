@@ -25,8 +25,8 @@ class DataGenerator:
                  T1_in: float, T1_out: float,
                  P0_in: float, P0_out: float,
                  Tfinal: float = 10.,
-                 Nr: int = 500,
-                 Nt: int = 2000,
+                 Nr: int = 2000,
+                 Nt: int = 500,
                  tanh_slope: float = 0.,
                  ):
         self.R = R; self.r_max = r_max; self.Tfinal = Tfinal; self.Nr = Nr; self.Nt = Nt
