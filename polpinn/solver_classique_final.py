@@ -277,8 +277,8 @@ def compute_solver_params_from_exp(case_name: str, exp_data: dict) -> dict:
     Tfinal = float(np.max(t_arr))
 
     # Discrétisation (ton exemple : Nr=Nt=1000)
-    Nr = int(exp_data.get("Nr", 1000))
-    Nt = int(exp_data.get("Nt", 1000))
+    Nr = int(exp_data.get("Nr", 2000))
+    Nt = int(exp_data.get("Nt", 500))
 
     params_solver = dict(
         R=R_m,
