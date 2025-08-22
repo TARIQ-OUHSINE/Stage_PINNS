@@ -288,7 +288,7 @@ def compute_solver_params_from_exp(case_name: str, exp_data: dict) -> dict:
         T1_in=T1_in, T1_out=T1_out,
         P0_in=P0_in, P0_out=P0_out,
         Tfinal=Tfinal, Nr=Nr, Nt=Nt,
-        tanh_slope=R_m*0,
+        tanh_slope=R_m*0.1,
         solver="lu_shift"
     )
     return params_solver
