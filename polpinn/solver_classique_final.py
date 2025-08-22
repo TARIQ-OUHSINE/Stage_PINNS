@@ -288,7 +288,7 @@ def compute_solver_params_from_exp(case_name: str, exp_data: dict) -> dict:
         T1_in=T1_in, T1_out=T1_out,
         P0_in=P0_in, P0_out=P0_out,
         Tfinal=Tfinal, Nr=Nr, Nt=Nt,
-        tanh_slope=R_m*0.05,     # comme ton code
+        tanh_slope=R_m*0,
         solver="lu_shift"
     )
     return params_solver
@@ -303,7 +303,7 @@ def run_case(case_name: str, exp_data: dict, outdir: Path, comm: MPI.Comm):
         print(f"\n--- Traitement du cas : {case_name} ---")
     t0 = time.time()
 
-    # Paramètres FEM à partir du pickle (comme ton code)
+    # Paramètres FEM à partir du pickle 
     params_solver = compute_solver_params_from_exp(case_name, exp_data)
 
     # Solve
@@ -312,7 +312,7 @@ def run_case(case_name: str, exp_data: dict, outdir: Path, comm: MPI.Comm):
 
     row = None
     if gen.P_time is not None and rank == 0:
-        # Chemin EXACT voulu par ton code
+        # Chemin EXACT
         base = outdir / f"{case_name}_reference_FEM" / "Data"
         npz_path = base / "reference_FEM_solution.npz"
         save_npz(npz_path, gen.P_time, gen.r_sorted, gen.t_vec, params_solver)
@@ -393,7 +393,7 @@ def main():
             w = csv.DictWriter(fcsv, fieldnames=fieldnames)
             w.writeheader(); w.writerows(rows)
         print(f"\nRécap écrit : {csv_path}")
-        print("Terminé ✅")
+        print("Terminé")
 
 
 if __name__ == "__main__":
