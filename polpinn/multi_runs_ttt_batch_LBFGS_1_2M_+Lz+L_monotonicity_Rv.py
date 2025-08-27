@@ -421,8 +421,8 @@ def affichage(path: Path):
     fig, ax = plt.subplots(figsize=(10, 8))
     contour = ax.contourf(grid_r.numpy() * 1e9, grid_t.numpy(), P_colormap, 50, cmap='jet')
     cbar = fig.colorbar(contour, ax=ax); cbar.set_label('Polarisation P(r,t)')
-    ax.axvline(x=R_final_m * 1e9, color='white', linestyle='--', linewidth=2, label=f'Interface R = {R_final_m * 1e9:.2f} nm')
-    ax.set_xlabel('Rayon r (nm)'); ax.set_ylabel('Temps t (s)'); ax.set_title(f"Polarisation (Domaine Total)\nR initial = {R_initial_m*1e9:.2f} nm, R prédit = {R_final_m*1e9:.2f} nm")
+    ax.axvline(x= R_initial_m * 1e9, color='white', linestyle='--', linewidth=2)
+    ax.set_xlabel('Rayon r (nm)'); ax.set_ylabel('Temps t (s)'); ax.set_title(f"Polarisation (Domaine Total)")
     ax.legend(); plt.savefig(graph_dir / "P_r_t_colormap_total.png"); plt.close(fig)
     
     r_range_solid = torch.linspace(0, R_final_m, 50)
