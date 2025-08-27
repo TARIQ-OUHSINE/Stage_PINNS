@@ -1,5 +1,5 @@
 # ==============================================================================
-#           SCRIPT UNIQUE - VERSION AVEC R APPRENABLE (LEARNABLE)
+#           SCRIPT UNIQUE - VERSION AVEC R APPRENABLE (BUG CORRIGÉ)
 # ==============================================================================
 
 import sys
@@ -20,19 +20,16 @@ import matplotlib.pyplot as plt
 import argparse
 
 # ==============================================================================
-# SECTION 1: OUTILS ET DÉFINITIONS (MODIFIÉ)
+# SECTION 1: OUTILS ET DÉFINITIONS (Inchangée)
 # ==============================================================================
 
-# NOUVEAU: Module conteneur pour le réseau et les paramètres apprenables
 class PINN_System(nn.Module):
     def __init__(self, nn_model, initial_R_norm):
         super(PINN_System, self).__init__()
         self.nn = nn_model
-        # R_norm est maintenant un paramètre du modèle, donc apprenable
         self.R_norm = torch.nn.Parameter(torch.tensor(initial_R_norm, dtype=torch.float32))
 
     def forward(self, x):
-        # Passe simplement l'appel au réseau de neurones interne
         return self.nn(x)
 
 class Physics_informed_nn(nn.Module):
@@ -77,7 +74,6 @@ def normalisation(R, D_ref, R_prime, D_prime):
     return R_norm, D_norm, R_prime_norm, D_prime_norm, ordre_R
 
 class DataAugmentation:
-    # ... (code inchangé) ...
     def __init__(self, data_df, coeff_normal, mono=False):
         self.mono, self.coeff_normal = mono, coeff_normal
         self.times = np.array(data_df["t"])
@@ -111,9 +107,8 @@ class DataAugmentation:
 # SECTION 2: MOTEUR D'ENTRAÎNEMENT (MODIFIÉ)
 # ==============================================================================
 
-# MODIFIÉ: La signature des fonctions de coût change pour accepter le paramètre R_norm apprenable
 def cost_enhanced_batch(pinn_system, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, X_interface_batch, R_prime_norm, D_solid_norm, D_liquid_norm):
-    R_norm = pinn_system.R_norm  # On récupère la valeur actuelle de R_norm
+    R_norm = pinn_system.R_norm
     
     # --- Pertes de Physique (Fick) ---
     X_fick_batch.requires_grad_(True)
@@ -135,7 +130,8 @@ def cost_enhanced_batch(pinn_system, F_solid, F_liquid, S_f, S_j, X_fick_batch, 
     t_boundary_batch = X_boundary_batch[:, 1].view(-1, 1)
     X_ini_batch = X_data_batch[t_vals == 0]
 
-    X_solid_boundary_batch = torch.cat([torch.full_like(t_boundary_batch, R_norm), t_boundary_batch], dim=1)
+    # CORRIGÉ: Utilisation de .item() pour extraire la valeur scalaire du paramètre R_norm
+    X_solid_boundary_batch = torch.cat([torch.full_like(t_boundary_batch, R_norm.item()), t_boundary_batch], dim=1)
     X_total_boundary_batch = torch.cat([torch.full_like(t_boundary_batch, R_prime_norm), t_boundary_batch], dim=1)
     G_pred_at_R = pinn_system(X_solid_boundary_batch)
     G_pred_at_R_prime = pinn_system(X_total_boundary_batch)
@@ -197,7 +193,8 @@ def cost_enhanced_full_batch(pinn_system, F_solid, F_liquid, S_f, S_j, X_fick_to
     t_boundary = X_boundary[:, 1].view(-1, 1)
     X_ini = X_data_total[t_vals == 0]
     
-    X_solid_boundary = torch.cat([torch.full_like(t_boundary, R_norm), t_boundary], dim=1)
+    # CORRIGÉ: Utilisation de .item() pour extraire la valeur scalaire du paramètre R_norm
+    X_solid_boundary = torch.cat([torch.full_like(t_boundary, R_norm.item()), t_boundary], dim=1)
     X_total_boundary = torch.cat([torch.full_like(t_boundary, R_prime_norm), t_boundary], dim=1)
     G_pred_at_R = pinn_system(X_solid_boundary)
     G_pred_at_R_prime = pinn_system(X_total_boundary)
@@ -239,20 +236,17 @@ def cost_enhanced_full_batch(pinn_system, F_solid, F_liquid, S_f, S_j, X_fick_to
     return total_loss, loss_components
 
 def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
+    # ... (le reste de la fonction est inchangé et correct)
     torch.manual_seed(1234)
     batch_size = params_pinns["batch_size"]
     
-    # R_vrai_m est maintenant juste une estimation initiale
     R_initial_m, R_prime_m = params["R_vrai_m"], params["R_prime_m"]
-    # La normalisation est faite sur cette valeur initiale pour définir l'échelle
     R_initial_norm, D_solid_norm, R_prime_norm, D_liquid_norm, ordre_R = normalisation(R_initial_m, params["D_f"], R_prime_m, params["D_j"])
     params["ordre_R"] = ordre_R
 
-    # MODIFIÉ: Création du système PINN
     nn_model = Physics_informed_nn(params_pinns["nb_hidden_layer"], params_pinns["nb_hidden_perceptron"], params["P0_j"])
     pinn_system = PINN_System(nn_model, R_initial_norm)
 
-    # Geler le paramètre R au début si var_R est activé
     if params_pinns.get("var_R", False):
         pinn_system.R_norm.requires_grad = False
         print(f"Apprentissage de R activé. R sera gelé jusqu'à l'itération {params_pinns['start_R_iter']}.")
@@ -261,7 +255,6 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     F_solid = Fick(D_solid_norm, params["T_1_f"], params["P0_f"] / params["P0_j"])
     F_liquid = Fick(D_liquid_norm, params["T_1_j"], 1.0)
     
-    # ... (Création du DataSet inchangée) ...
     print(f"Création du DataSet enrichi...")
     def_t = params["def_t"]
     nb_r, nb_t = 100, 100
@@ -284,21 +277,15 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     X_r_prime_grad = torch.full_like(X_t_grad, R_prime_norm)
     X_grad_total = torch.cat([torch.cat([X_r0_grad, X_t_grad], dim=1), torch.cat([X_r_prime_grad, X_t_grad], dim=1)], dim=0)
     
-    X_t_interface = torch.linspace(0, def_t, nb_t).view(-1, 1)
-    # R_norm pour l'interface n'est plus fixe, donc ce tenseur n'est plus utilisé directement
-    # Il est reconstruit à la volée dans la fonction de coût
-    
     print(f"DataSet créé: {X_fick_total.shape[0]} Fick, {X_data_total.shape[0]} Données, {X_grad_total.shape[0]} Gradient.")
     
     loss = [[] for _ in range(10)]
     
     print("\n--- Phase 1: Adam Optimizer avec Mini-Batching ---")
-    # MODIFIÉ: L'optimiseur prend les paramètres du système complet
     optimizer_adam = optim.Adam(pinn_system.parameters(), lr=params_pinns['lr'])
     epochs_phase1 = params_pinns['epochs_adam']
     
     for it in tqdm(range(epochs_phase1), desc="Phase 1 (Adam)", file=sys.stdout):
-        # Dégeler R après un certain nombre d'itérations
         if params_pinns.get("var_R", False) and it == params_pinns['start_R_iter']:
             pinn_system.R_norm.requires_grad = True
             print(f"\nItération {it}: Dégel de R. L'apprentissage de R commence.")
@@ -307,7 +294,7 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
         fick_indices = torch.randint(0, X_fick_total.shape[0], (n,))
         data_indices = torch.randint(0, X_data_total.shape[0], (n,))
         grad_indices = torch.randint(0, X_grad_total.shape[0], (n,))
-        # Les points d'interface doivent être reconstruits avec le R_norm actuel
+        
         X_t_interface_batch = torch.rand(n, 1) * def_t
         X_r_interface_batch = torch.full_like(X_t_interface_batch, pinn_system.R_norm.item())
         X_interface_batch = torch.cat([X_r_interface_batch, X_t_interface_batch], dim=1)
@@ -317,7 +304,6 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
         X_grad_batch = X_grad_total[grad_indices]
         
         optimizer_adam.zero_grad()
-        # MODIFIÉ: Appel de la fonction de coût avec les bons arguments
         L, L_list = cost_enhanced_batch(pinn_system, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, X_interface_batch, R_prime_norm, D_solid_norm, D_liquid_norm)
         L.backward()
         optimizer_adam.step()
@@ -325,7 +311,6 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
         if it % 10 == 0:
             for i in range(len(L_list)): loss[i].append(L_list[i])
         
-        # Afficher la valeur de R périodiquement si elle est apprise
         if params_pinns.get("var_R", False) and pinn_system.R_norm.requires_grad and it % 200 == 0:
             R_current_m = pinn_system.R_norm.item() * (10**ordre_R)
             tqdm.write(f"Iter {it}: R = {R_current_m*1e9:.3f} nm")
@@ -343,7 +328,6 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     def closure():
         nonlocal lbfgs_iter_count
         optimizer_lbfgs.zero_grad()
-        # On reconstruit le tenseur d'interface complet avec le R_norm actuel
         X_t_interface_total = torch.linspace(0, def_t, nb_t).view(-1, 1)
         X_r_interface_total = torch.full_like(X_t_interface_total, pinn_system.R_norm.item())
         X_interface_total_current = torch.cat([X_r_interface_total, X_t_interface_total], dim=1)
@@ -367,11 +351,12 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     return pinn_system, loss
 
 # ==============================================================================
-# SECTION 3 & 4 (Sauvegarde, Affichage, Main) - MODIFIÉES
+# SECTION 3 & 4 (Sauvegarde, Affichage, Main)
 # ==============================================================================
+
+# ... (toutes les fonctions et le bloc __main__ restent inchangés et corrects) ...
 def save_results(pinn_system, loss_history, params_pinns, params, path):
     file_path = path / "Data"
-    # Sauvegarde de l'état du système complet (NN + R)
     torch.save(pinn_system.state_dict(), file_path / "model.pth")
     with open(file_path / "loss.json", "w") as f: json.dump(loss_history, f)
     with open(file_path / "params.json", "w") as f: json.dump(params, f, indent=4)
@@ -392,18 +377,15 @@ def affichage(path: Path):
     R_initial_m, R_prime_m = params["R_vrai_m"], params["R_prime_m"]
     _, _, _, _, ordre_R = normalisation(R_initial_m, params["D_f"], R_prime_m, params["D_j"])
     
-    # MODIFIÉ: Chargement du PINN_System
     nn_model = Physics_informed_nn(params_pinns["nb_hidden_layer"], params_pinns["nb_hidden_perceptron"], coeff_normal)
-    pinn_system = PINN_System(nn_model, initial_R_norm=0) # La valeur initiale n'importe pas, elle sera écrasée
+    pinn_system = PINN_System(nn_model, initial_R_norm=0)
     pinn_system.load_state_dict(torch.load(data_dir / "model.pth"))
     pinn_system.eval()
 
-    # Récupérer la valeur finale apprise de R
     R_final_norm = pinn_system.R_norm.item()
     R_final_m = R_final_norm * (10**ordre_R)
     print(f"Valeur finale de R apprise: {R_final_m * 1e9:.3f} nm (valeur initiale: {R_initial_m * 1e9:.2f} nm)")
 
-    # ... (Plot des pertes inchangé) ...
     fig, ax1 = plt.subplots(1, 1, figsize=(14, 7))
     loss_names = ["Total Sum", "L_yz (Total Avg)", "L_initial", "L_fick_solid", "L_fick_liquid", 
                   "L_solid (Data)", "L_solvant (Data)", "L_gradient_nul", "L_flux_continuity", "L_monotonicity"]
@@ -413,7 +395,6 @@ def affichage(path: Path):
     ax1.set_yscale('log'); ax1.set_title('Evolution de la fonction de coût'); ax1.set_xlabel('Itérations (evals)'); ax1.set_ylabel('Coût (log)'); ax1.legend(); ax1.grid(True)
     fig.tight_layout(); fig.savefig(graph_dir / "loss_evolution.png"); plt.close(fig)
     
-    # ... (Plots de validation inchangés, mais utilisant R_final_norm) ...
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 7))
     t_plot = torch.linspace(0, params["def_t"], 200).view(-1, 1)
     
@@ -445,7 +426,6 @@ def affichage(path: Path):
 
     fig.tight_layout(); fig.savefig(graph_dir / "mean_polarization_fits.png"); plt.close(fig)
     
-    # MODIFIÉ: Titre des colormaps mis à jour avec la valeur finale de R
     r_range = torch.linspace(0, R_prime_m, 100)
     t_range = torch.linspace(0, params["def_t"], 100)
     grid_r, grid_t = torch.meshgrid(r_range, t_range, indexing='ij')
@@ -479,19 +459,6 @@ def affichage(path: Path):
     plt.savefig(graph_dir / "P_r_t_colormap_solid.png"); plt.close(fig)
 
 if __name__ == "__main__":
-    # ...
-    # MODIFIÉ: Nouveaux hyperparamètres pour l'apprentissage de R
-    params_pinns = {
-        "nb_hidden_layer": 4,
-        "nb_hidden_perceptron": 32, 
-        "lr": 0.001,
-        "epochs_adam": 8000, 
-        "batch_size": 256,
-        "var_R": True,  # Activer l'apprentissage de R
-        "start_R_iter": 4000 # Itération Adam pour commencer à apprendre R
-    }
-    # ... le reste est inchangé
-    # ...
     parser = argparse.ArgumentParser(description="Lancer un entraînement PINN pour le cas enrichi (deux milieux + pertes additionnelles).")
     parser.add_argument('--data_file', type=str, required=True, help="Chemin vers le fichier de données .pkl global.")
     parser.add_argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine des résultats.")
@@ -507,6 +474,16 @@ if __name__ == "__main__":
         base_output = Path("output")
         case_name = "11_58_40_75"
     
+    params_pinns = {
+        "nb_hidden_layer": 4,
+        "nb_hidden_perceptron": 32, 
+        "lr": 0.001,
+        "epochs_adam": 8000, 
+        "batch_size": 256,
+        "var_R": True,
+        "start_R_iter": 4000
+    }
+
     print(f"--- Lancement du cas 'Corrigé': {case_name} ---")
     with open(data_file, "rb") as f: all_data = pickle.load(f)
 
