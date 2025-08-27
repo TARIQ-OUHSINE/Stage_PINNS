@@ -1,6 +1,6 @@
 # ==============================================================================
 #           SCRIPT UNIQUE - VERSION AVEC R APPRENABLE
-#               (Basé sur le script avec poids dynamiques et monotonicité)
+#               + GRAPHIQUE R(t) + AXE DES PERTES CORRIGÉ
 # ==============================================================================
 
 import sys
@@ -21,21 +21,17 @@ import matplotlib.pyplot as plt
 import argparse
 
 # ==============================================================================
-# SECTION 1: OUTILS ET DÉFINITIONS (MODIFIÉ)
+# SECTION 1: OUTILS ET DÉFINITIONS (Inchangée)
 # ==============================================================================
-
-# NOUVEAU: Module conteneur pour le réseau et les paramètres apprenables
 class PINN_System(nn.Module):
     def __init__(self, nn_model, initial_R_norm):
         super(PINN_System, self).__init__()
         self.nn = nn_model
-        # R_norm est maintenant un paramètre du modèle, donc apprenable
         self.R_norm = torch.nn.Parameter(torch.tensor(initial_R_norm, dtype=torch.float32))
 
     def forward(self, x):
         return self.nn(x)
 
-# MODIFIÉ: L'initialisation n'a plus besoin de R_norm
 class Physics_informed_nn(nn.Module):
     def __init__(self, nb_layer: int, hidden_layer: int, coeff_normal: float):
         super(Physics_informed_nn, self).__init__()
@@ -51,6 +47,7 @@ class Physics_informed_nn(nn.Module):
         x = torch.sigmoid(self.fc_out(x))
         return x
 
+# ... (Le reste de la Section 1 est identique et non affiché pour la clarté) ...
 class Fick:
     def __init__(self, D, T, P_0):
         self.D, self.T, self.P_0 = D, T, P_0
@@ -108,133 +105,94 @@ class DataAugmentation:
         return result.x, result.fun
 
 # ==============================================================================
-# SECTION 2: MOTEUR D'ENTRAÎNEMENT (MODIFIÉ)
+# SECTION 2: MOTEUR D'ENTRAÎNEMENT (MODIFIÉ pour collecter l'historique de R)
 # ==============================================================================
-
 def cost_enhanced_batch(pinn_system, F_solid, F_liquid, S_f, S_j, X_fick_batch, X_data_batch, X_grad_batch, X_interface_batch, R_prime_norm, D_solid_norm, D_liquid_norm):
+    # ... (code inchangé)
     R_norm = pinn_system.R_norm
-    
-    # --- Pertes de Physique (Fick) ---
     X_fick_batch.requires_grad_(True)
     r_fick = X_fick_batch[:, 0]
     X_fick_solid = X_fick_batch[r_fick < R_norm]
     X_fick_liquid = X_fick_batch[r_fick >= R_norm]
-
     L_fick_s = torch.mean(torch.square(F_solid(P_from_G(pinn_system(X_fick_solid), X_fick_solid), X_fick_solid))) if X_fick_solid.shape[0] > 0 else torch.tensor(0.0)
     L_fick_l = torch.mean(torch.square(F_liquid(P_from_G(pinn_system(X_fick_liquid), X_fick_liquid), X_fick_liquid))) if X_fick_liquid.shape[0] > 0 else torch.tensor(0.0)
-    
     P_mono = P_from_G(pinn_system(X_fick_batch), X_fick_batch)
     dP_dr_mono = torch.autograd.grad(P_mono, X_fick_batch, grad_outputs=torch.ones_like(P_mono), create_graph=True)[0][:, 0].view(-1, 1)
     L_monotonicity = torch.mean(torch.square(torch.relu(-dP_dr_mono)))
-    
-    # --- Pertes sur les Données et Conditions aux Limites ---
     X_data_batch.requires_grad_(True)
     t_vals = X_data_batch[:, 1]
     X_boundary_batch = X_data_batch[t_vals > 0]
     t_boundary_batch = X_boundary_batch[:, 1].view(-1, 1)
     X_ini_batch = X_data_batch[t_vals == 0]
-
-    # CORRIGÉ: Utilisation de .item() pour extraire la valeur scalaire
     X_solid_boundary_batch = torch.cat([torch.full_like(t_boundary_batch, R_norm.item()), t_boundary_batch], dim=1)
     X_total_boundary_batch = torch.cat([torch.full_like(t_boundary_batch, R_prime_norm), t_boundary_batch], dim=1)
     G_pred_at_R = pinn_system(X_solid_boundary_batch)
     G_pred_at_R_prime = pinn_system(X_total_boundary_batch)
-
     L_solide = torch.mean(torch.square(G_pred_at_R - S_f(t_boundary_batch)))
-
     vol_frac_solid = (R_norm**3) / (R_prime_norm**3)
     G_target_from_data = (1.0 - vol_frac_solid) * S_j(t_boundary_batch) + vol_frac_solid * S_f(t_boundary_batch)
     L_yz = torch.mean(torch.square(G_pred_at_R_prime - G_target_from_data))
-    
     L_ini = torch.mean(torch.square(P_from_G(pinn_system(X_ini_batch), X_ini_batch))) if X_ini_batch.shape[0] > 0 else torch.tensor(0.0)
-
     X_grad_batch.requires_grad_(True)
     P_grad = P_from_G(pinn_system(X_grad_batch), X_grad_batch)
     dP_dr = torch.autograd.grad(P_grad, X_grad_batch, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
     L_gradient_nul = torch.mean(torch.square(dP_dr))
-
     X_interface_batch.requires_grad_(True)
     P_interface = P_from_G(pinn_system(X_interface_batch), X_interface_batch)
     dP_dr_interface = torch.autograd.grad(P_interface, X_interface_batch, grad_outputs=torch.ones_like(P_interface), create_graph=True)[0][:, 0].view(-1, 1)
     L_flux_continuity = torch.mean(torch.square((D_solid_norm - D_liquid_norm) * dP_dr_interface))
-    
     w_data, w_phys, w_flux, w_mono = 1.0, 1.0, 1.0, 1.0
-
     total_fick_points = X_fick_batch.shape[0]
     w_fick_solid, w_fick_liquid = (X_fick_solid.shape[0] / total_fick_points, X_fick_liquid.shape[0] / total_fick_points) if total_fick_points > 0 else (0.0, 0.0)
-
-    total_loss = (w_data * (L_yz + L_solide)) + \
-                 (w_phys * (L_ini + L_gradient_nul)) + \
-                 (w_phys * (w_fick_solid * L_fick_s + w_fick_liquid * L_fick_l)) + \
-                 (w_flux * L_flux_continuity) + (w_mono * L_monotonicity)
-    
-    loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
-                       L_solide.item(), L_gradient_nul.item(), L_flux_continuity.item(), L_monotonicity.item()]
+    total_loss = (w_data * (L_yz + L_solide)) + (w_phys * (L_ini + L_gradient_nul)) + (w_phys * (w_fick_solid * L_fick_s + w_fick_liquid * L_fick_l)) + (w_flux * L_flux_continuity) + (w_mono * L_monotonicity)
+    loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), L_solide.item(), L_gradient_nul.item(), L_flux_continuity.item(), L_monotonicity.item()]
     return total_loss, loss_components
 
 def cost_enhanced_full_batch(pinn_system, F_solid, F_liquid, S_f, S_j, X_fick_total, X_data_total, X_grad_total, X_interface_total, R_prime_norm, D_solid_norm, D_liquid_norm):
+    # ... (code inchangé)
     R_norm = pinn_system.R_norm
-
     X_fick_total.requires_grad_(True)
     r_fick = X_fick_total[:, 0]
     X_fick_solid = X_fick_total[r_fick < R_norm]
     X_fick_liquid = X_fick_total[r_fick >= R_norm]
     L_fick_s = torch.mean(torch.square(F_solid(P_from_G(pinn_system(X_fick_solid), X_fick_solid), X_fick_solid)))
     L_fick_l = torch.mean(torch.square(F_liquid(P_from_G(pinn_system(X_fick_liquid), X_fick_liquid), X_fick_liquid)))
-    
     P_mono = P_from_G(pinn_system(X_fick_total), X_fick_total)
     dP_dr_mono = torch.autograd.grad(P_mono, X_fick_total, grad_outputs=torch.ones_like(P_mono), create_graph=True)[0][:, 0].view(-1, 1)
     L_monotonicity = torch.mean(torch.square(torch.relu(-dP_dr_mono)))
-
     X_data_total.requires_grad_(True)
     t_vals = X_data_total[:, 1]
     X_boundary = X_data_total[t_vals > 0]
     t_boundary = X_boundary[:, 1].view(-1, 1)
     X_ini = X_data_total[t_vals == 0]
-    
-    # CORRIGÉ: Utilisation de .item()
     X_solid_boundary = torch.cat([torch.full_like(t_boundary, R_norm.item()), t_boundary], dim=1)
     X_total_boundary = torch.cat([torch.full_like(t_boundary, R_prime_norm), t_boundary], dim=1)
     G_pred_at_R = pinn_system(X_solid_boundary)
     G_pred_at_R_prime = pinn_system(X_total_boundary)
-
     L_solide = torch.mean(torch.square(G_pred_at_R - S_f(t_boundary)))
     vol_frac_solid = (R_norm**3) / (R_prime_norm**3)
     G_target_from_data = (1.0 - vol_frac_solid) * S_j(t_boundary) + vol_frac_solid * S_f(t_boundary)
     L_yz = torch.mean(torch.square(G_pred_at_R_prime - G_target_from_data))
-
     L_ini = torch.mean(torch.square(P_from_G(pinn_system(X_ini), X_ini)))
-    
     X_grad_total.requires_grad_(True)
     P_grad = P_from_G(pinn_system(X_grad_total), X_grad_total)
     dP_dr = torch.autograd.grad(P_grad, X_grad_total, grad_outputs=torch.ones_like(P_grad), create_graph=True)[0][:, 0]
     L_gradient_nul = torch.mean(torch.square(dP_dr))
-    
     X_interface_total.requires_grad_(True)
     P_interface = P_from_G(pinn_system(X_interface_total), X_interface_total)
     dP_dr_interface = torch.autograd.grad(P_interface, X_interface_total, grad_outputs=torch.ones_like(P_interface), create_graph=True)[0][:, 0].view(-1, 1)
     L_flux_continuity = torch.mean(torch.square((D_solid_norm - D_liquid_norm) * dP_dr_interface))
-
     w_data, w_phys, w_flux, w_mono = 1.0, 1.0, 1.0, 1.0
-    
     total_fick_points = X_fick_total.shape[0]
     w_fick_solid, w_fick_liquid = (X_fick_solid.shape[0] / total_fick_points, X_fick_liquid.shape[0] / total_fick_points) if total_fick_points > 0 else (0.0, 0.0)
-    
-    total_loss = (w_data * (L_yz + L_solide)) + \
-                 (w_phys * (L_ini + L_gradient_nul)) + \
-                 (w_phys * (w_fick_solid * L_fick_s + w_fick_liquid * L_fick_l)) + \
-                 (w_flux * L_flux_continuity) + (w_mono * L_monotonicity)
-
-    loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), \
-                       L_solide.item(), L_gradient_nul.item(), L_flux_continuity.item(), L_monotonicity.item()]
+    total_loss = (w_data * (L_yz + L_solide)) + (w_phys * (L_ini + L_gradient_nul)) + (w_phys * (w_fick_solid * L_fick_s + w_fick_liquid * L_fick_l)) + (w_flux * L_flux_continuity) + (w_mono * L_monotonicity)
+    loss_components = [total_loss.item(), L_yz.item(), L_ini.item(), L_fick_s.item(), L_fick_l.item(), L_solide.item(), L_gradient_nul.item(), L_flux_continuity.item(), L_monotonicity.item()]
     return total_loss, loss_components
 
 def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S_j: DataAugmentation, output_path: Path):
     torch.manual_seed(1234)
     batch_size = params_pinns["batch_size"]
     
-    ###======= je change R_initial ici =====
-
     R_initial_m, R_prime_m = params["R_ini"], params["R_prime_m"]
     R_initial_norm, D_solid_norm, R_prime_norm, D_liquid_norm, ordre_R = normalisation(R_initial_m, params["D_f"], R_prime_m, params["D_j"])
     params["ordre_R"] = ordre_R
@@ -258,7 +216,6 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     X_t_f_total = torch.linspace(0, def_t, nb_t).view(-1, 1)
     grid_r_f, grid_t_f = torch.meshgrid(X_r_f_total.squeeze(), X_t_f_total.squeeze(), indexing="ij")
     X_fick_total = torch.stack([grid_r_f.flatten(), grid_t_f.flatten()], dim=1)
-    
     X_R_prime_data = torch.full((nb_t, 1), R_prime_norm)
     X_t_data = torch.linspace(0, def_t, nb_t).view(-1, 1)
     X_boundary_total = torch.cat([X_R_prime_data, X_t_data], dim=1)
@@ -266,7 +223,6 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     X_t_ini_total = torch.zeros((nb_t, 1))
     X_ini_total = torch.cat([X_r_ini_total, X_t_ini_total], dim=1)
     X_data_total = torch.cat([X_boundary_total, X_ini_total], dim=0)
-
     X_t_grad = torch.linspace(0, def_t, nb_t).view(-1, 1)
     X_r0_grad = torch.zeros_like(X_t_grad)
     X_r_prime_grad = torch.full_like(X_t_grad, R_prime_norm)
@@ -275,6 +231,9 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     print(f"DataSet créé: {X_fick_total.shape[0]} Fick, {X_data_total.shape[0]} Données, {X_grad_total.shape[0]} Gradient.")
     
     loss = [[] for _ in range(9)]
+    # MODIFIÉ: Initialisation des listes pour l'historique de R
+    R_history = []
+    R_iteration_history = []
     
     print("\n--- Phase 1: Adam Optimizer avec Mini-Batching ---")
     optimizer_adam = optim.Adam(pinn_system.parameters(), lr=params_pinns['lr'])
@@ -305,6 +264,11 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
         
         if it % 10 == 0:
             for i in range(len(L_list)): loss[i].append(L_list[i])
+            # MODIFIÉ: Sauvegarde de R si l'apprentissage est actif
+            if params_pinns.get("var_R", False) and pinn_system.R_norm.requires_grad:
+                R_current_m = pinn_system.R_norm.item() * (10**ordre_R)
+                R_history.append(R_current_m * 1e9) # en nm
+                R_iteration_history.append(it)
         
         if params_pinns.get("var_R", False) and pinn_system.R_norm.requires_grad and it % 200 == 0:
             R_current_m = pinn_system.R_norm.item() * (10**ordre_R)
@@ -332,6 +296,13 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
         
         for i in range(len(L_list)): loss[i].append(L_list[i])
         
+        # MODIFIÉ: Sauvegarde de R à chaque évaluation de L-BFGS
+        if params_pinns.get("var_R", False) and pinn_system.R_norm.requires_grad:
+            R_current_m = pinn_system.R_norm.item() * (10**ordre_R)
+            R_history.append(R_current_m * 1e9) # en nm
+            # L'itération est la fin de Adam + le nb d'évals de L-BFGS
+            R_iteration_history.append(epochs_phase1 + lbfgs_iter_count)
+
         if lbfgs_iter_count % 20 == 0:
             R_current_m = pinn_system.R_norm.item() * (10**ordre_R)
             print(f"[L-BFGS] Iter {lbfgs_iter_count} - Loss: {L.item():.2e} - R: {R_current_m*1e9:.3f} nm")
@@ -343,19 +314,26 @@ def run_enhanced_case(params_pinns: dict, params: dict, S_f: DataAugmentation, S
     final_loss = loss[0][-1] if loss[0] else float('inf')
     print(f"\nEntraînement terminé. Perte finale (L-BFGS): {final_loss:.2e}")
     
-    return pinn_system, loss
+    # MODIFIÉ: On retourne aussi l'historique de R
+    return pinn_system, loss, R_history, R_iteration_history
 
 # ==============================================================================
 # SECTION 3 & 4 (Sauvegarde, Affichage, Main)
 # ==============================================================================
-def save_results(pinn_system, loss_history, params_pinns, params, path):
+# MODIFIÉ: Sauvegarde de l'historique de R
+def save_results(pinn_system, loss_history, R_history, R_iteration_history, params_pinns, params, path):
     file_path = path / "Data"
     torch.save(pinn_system.state_dict(), file_path / "model.pth")
     with open(file_path / "loss.json", "w") as f: json.dump(loss_history, f)
+    # Sauvegarde de R dans un fichier séparé
+    R_evolution_data = {"R_history_nm": R_history, "iteration_history": R_iteration_history}
+    with open(file_path / "R_evolution.json", "w") as f: json.dump(R_evolution_data, f)
+    
     with open(file_path / "params.json", "w") as f: json.dump(params, f, indent=4)
     with open(file_path / "params_PINNS.json", "w") as f: json.dump(params_pinns, f, indent=4)
     print(f"Résultats sauvegardés dans {file_path}")
 
+# MODIFIÉ: Affichage du graphique de R et correction de l'axe des pertes
 def affichage(path: Path):
     print(f"Génération des graphiques pour : {path}")
     data_dir = path / "Data"
@@ -367,7 +345,20 @@ def affichage(path: Path):
     with open(data_dir / "S_f.pkl", "rb") as f: S_f = pickle.load(f)
     with open(data_dir / "S_j.pkl", "rb") as f: S_j = pickle.load(f)
     
-    R_initial_m, R_prime_m = params["R_vrai_m"], params["R_prime_m"]
+    # MODIFIÉ: Chargement de l'historique de R
+    R_evolution_path = data_dir / "R_evolution.json"
+    if R_evolution_path.exists():
+        with open(R_evolution_path, "r") as f:
+            R_evolution_data = json.load(f)
+        R_history = R_evolution_data["R_history_nm"]
+        R_iteration_history = R_evolution_data["iteration_history"]
+    else:
+        R_history, R_iteration_history = [], []
+        print("Fichier R_evolution.json non trouvé, le graphique de R ne sera pas généré.")
+
+    
+    R_initial_m, R_prime_m = params["R_ini"], params["R_prime_m"]
+    R_vrai_m = params["R_vrai_m"]
     _, _, _, _, ordre_R = normalisation(R_initial_m, params["D_f"], R_prime_m, params["D_j"])
     
     nn_model = Physics_informed_nn(params_pinns["nb_hidden_layer"], params_pinns["nb_hidden_perceptron"], coeff_normal)
@@ -377,28 +368,61 @@ def affichage(path: Path):
 
     R_final_norm = pinn_system.R_norm.item()
     R_final_m = R_final_norm * (10**ordre_R)
-    print(f"Valeur finale de R apprise: {R_final_m * 1e9:.3f} nm (valeur initiale: {R_initial_m * 1e9:.2f} nm)")
+    print(f"Valeur finale de R apprise: {R_final_m * 1e9:.3f} nm (valeur initiale: {R_initial_m * 1e9:.2f} nm, valeur réelle: {R_vrai_m * 1e9:.2f} nm)")
 
+    # MODIFIÉ: Correction de l'axe des abscisses pour le graphique des pertes
     fig, ax1 = plt.subplots(1, 1, figsize=(14, 7))
     loss_names = ["Total Sum", "L_yz", "L_initial", "L_fick_solid", "L_fick_liquid", "L_solid", "L_gradient_nul", "L_flux_continuity", "L_monotonicity"]
-    for i, name in enumerate(loss_names):
-        if i < len(loss):
-            ax1.plot(loss[i], label=name)
-    ax1.set_yscale('log'); ax1.set_title('Evolution de la fonction de coût'); ax1.set_xlabel('Itérations (evals)'); ax1.set_ylabel('Coût (log)'); ax1.legend(); ax1.grid(True)
-    fig.tight_layout(); fig.savefig(graph_dir / "loss_evolution.png"); plt.close(fig)
     
+    # Création d'un axe des x plus représentatif
+    epochs_adam = params_pinns['epochs_adam']
+    num_adam_points = epochs_adam // 10
+    num_lbfgs_points = len(loss[0]) - num_adam_points
+    
+    # Les itérations d'Adam sont espacées de 10
+    x_adam = [i * 10 for i in range(num_adam_points)]
+    # Les évaluations de L-BFGS suivent directement
+    x_lbfgs = [epochs_adam + i for i in range(num_lbfgs_points)]
+    x_axis_loss = x_adam + x_lbfgs
+
+    for i, name in enumerate(loss_names):
+        if i < len(loss) and len(loss[i]) == len(x_axis_loss):
+            ax1.plot(x_axis_loss, loss[i], label=name)
+            
+    ax1.set_yscale('log'); ax1.set_title('Evolution de la fonction de coût')
+    ax1.set_xlabel('Itération (Adam) / Évaluation (L-BFGS)'); ax1.set_ylabel('Coût (log)'); ax1.legend(); ax1.grid(True)
+    # Ajout d'une ligne verticale pour marquer la transition
+    ax1.axvline(x=epochs_adam, color='r', linestyle='--', linewidth=2, label='Début L-BFGS')
+    ax1.legend()
+    fig.tight_layout(); fig.savefig(graph_dir / "loss_evolution.png"); plt.close(fig)
+
+    # NOUVEAU: Graphique de l'évolution de R
+    if R_history:
+        fig, ax_R = plt.subplots(1, 1, figsize=(14, 7))
+        ax_R.plot(R_iteration_history, R_history, 'b-', label='R prédit')
+        ax_R.axhline(y=R_vrai_m * 1e9, color='g', linestyle='--', label=f'R réel ({R_vrai_m*1e9:.2f} nm)')
+        ax_R.axhline(y=R_initial_m * 1e9, color='k', linestyle=':', label=f'R initial ({R_initial_m*1e9:.2f} nm)')
+        ax_R.axvline(x=params_pinns['start_R_iter'], color='r', linestyle='--', label='Début apprentissage de R')
+        
+        ax_R.set_title('Évolution du rayon R appris par le modèle')
+        ax_R.set_xlabel('Itération (Adam) / Évaluation (L-BFGS)')
+        ax_R.set_ylabel('Rayon R (nm)')
+        ax_R.legend()
+        ax_R.grid(True)
+        fig.tight_layout()
+        fig.savefig(graph_dir / "R_evolution.png")
+        plt.close(fig)
+    
+    # ... (Le reste de l'affichage est inchangé et correct) ...
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
     t_plot = torch.linspace(0, params["def_t"], 200).view(-1, 1)
-    
     R_prime_norm = R_prime_m * 10**(-ordre_R)
-    
     X_solid_boundary = torch.cat([torch.full_like(t_plot, R_final_norm), t_plot], dim=1)
     G_pred_at_R = pinn_system(X_solid_boundary)
     ax1.plot(t_plot.numpy(), S_f(t_plot).numpy() * coeff_normal, 'k--', label='S_f Cible (Données)')
     ax1.plot(S_f.times, S_f.list_y_raw, 'ro', markersize=4, label='S_f Brutes')
     ax1.plot(t_plot.numpy(), G_pred_at_R.detach().numpy() * coeff_normal, 'b-', label='G(R, t) Prédit (Modèle)')
     ax1.set_title('Validation de la polarisation moyenne du solide'); ax1.set_xlabel('Temps (s)'); ax1.set_ylabel('Polarisation'); ax1.legend(); ax1.grid(True)
-
     X_boundary = torch.cat([torch.full_like(t_plot, R_prime_norm), t_plot], dim=1)
     G_pred_at_R_prime = pinn_system(X_boundary)
     vol_frac_solid = (R_final_norm**3) / (R_prime_norm**3)
@@ -407,7 +431,6 @@ def affichage(path: Path):
     ax2.plot(t_plot.numpy(), G_pred_at_R_prime.detach().numpy() * coeff_normal, 'b-', label='G(R\', t) Prédit')
     ax2.set_title('Validation de la polarisation moyenne totale'); ax2.set_xlabel('Temps (s)'); ax2.legend(); ax2.grid(True)
     fig.tight_layout(); fig.savefig(graph_dir / "mean_polarization_fits.png"); plt.close(fig)
-    
     r_range = torch.linspace(0, R_prime_m, 100)
     t_range = torch.linspace(0, params["def_t"], 100)
     grid_r, grid_t = torch.meshgrid(r_range, t_range, indexing='ij')
@@ -422,9 +445,8 @@ def affichage(path: Path):
     contour = ax.contourf(grid_r.numpy() * 1e9, grid_t.numpy(), P_colormap, 50, cmap='jet')
     cbar = fig.colorbar(contour, ax=ax); cbar.set_label('Polarisation P(r,t)')
     ax.axvline(x=R_final_m * 1e9, color='white', linestyle='--', linewidth=2, label=f'Interface R = {R_final_m * 1e9:.2f} nm')
-    ax.set_xlabel('Rayon r (nm)'); ax.set_ylabel('Temps t (s)'); ax.set_title(f"Polarisation (Domaine Total)\nR initial = {R_initial_m*1e9:.2f} nm, R prédit = {R_final_m*1e9:.2f} nm")
+    ax.set_xlabel('Rayon r (nm)'); ax.set_ylabel('Temps t (s)'); ax.set_title(f"Polarisation (Domaine Total)\nR réel = {R_vrai_m*1e9:.2f} nm, R prédit = {R_final_m*1e9:.2f} nm")
     ax.legend(); plt.savefig(graph_dir / "P_r_t_colormap_total.png"); plt.close(fig)
-    
     r_range_solid = torch.linspace(0, R_final_m, 50)
     grid_r_solid, grid_t_solid = torch.meshgrid(r_range_solid, t_range, indexing='ij')
     grid_r_solid_norm = grid_r_solid / (10**ordre_R)
@@ -441,11 +463,11 @@ def affichage(path: Path):
     plt.savefig(graph_dir / "P_r_t_colormap_solid.png"); plt.close(fig)
 
 if __name__ == "__main__":
+    # ... (code inchangé)
     parser = argparse.ArgumentParser(description="Lancer un entraînement PINN pour le cas enrichi (deux milieux + pertes additionnelles).")
     parser.add_argument('--data_file', type=str, required=True, help="Chemin vers le fichier de données .pkl global.")
     parser.add_argument('--output_dir', type=str, required=True, help="Chemin vers le dossier racine des résultats.")
     parser.add_argument('--case_name', type=str, required=True, help="Le nom du cas à traiter.")
-    
     try:       
         args = parser.parse_args()
         data_file = Path(args.data_file)
@@ -455,7 +477,6 @@ if __name__ == "__main__":
         data_file = Path("polpinn/donnees.pkl")
         base_output = Path("output")
         case_name = "11_58_40_75"
-    
     params_pinns = {
         "nb_hidden_layer": 4,
         "nb_hidden_perceptron": 32, 
@@ -465,24 +486,17 @@ if __name__ == "__main__":
         "var_R": True,
         "start_R_iter": 4000
     }
-
     print(f"--- Lancement du cas 'Corrigé': {case_name} ---")
     with open(data_file, "rb") as f: all_data = pickle.load(f)
-
     if case_name not in all_data:
         print(f"ERREUR: Cas '{case_name}' non trouvé."); sys.exit()
-
     exp_data = all_data[case_name]
     solid_data_key, solvent_data_key = "CrisOn", "JuiceOn"
     output_path = base_output / f"{case_name}_On_corrected_result_varR"
-    
     if output_path.exists(): shutil.rmtree(output_path)
     (output_path / "Data").mkdir(parents=True, exist_ok=True)
     (output_path / "Graphiques").mkdir(parents=True, exist_ok=True)
-    
     R_vrai_m = exp_data["R_s"] * 1.0e-9
-    
-    
     C_ref, D_ref_nm2_s = 60.0, 500.0
     D_ref_m2_s = D_ref_nm2_s * 1e-18
     C_f, C_j = exp_data.get("C_f", C_ref), exp_data.get("C_j", C_ref)
@@ -498,17 +512,17 @@ if __name__ == "__main__":
         "def_t": max(exp_data[solid_data_key]["t"]),
         "name": f"{case_name}_On_corrected", 
         "R_vrai_m": R_vrai_m, 
-        "R_ini" : R_vrai_m * 2,
+        "R_ini" : R_vrai_m / 2,
         "R_prime_m": R_vrai_m * 6.0,
     }
-    
     coeff_normal = params["P0_j"]
     S_f = DataAugmentation(pd.DataFrame(exp_data[solid_data_key]), coeff_normal)
     S_j = DataAugmentation(pd.DataFrame(exp_data[solvent_data_key]), coeff_normal)
 
-    model_final, loss_history = run_enhanced_case(params_pinns, params, S_f, S_j, output_path)
+    # MODIFIÉ: Capture des historiques de R
+    pinn_system_final, loss_history, R_history, R_iteration_history = run_enhanced_case(params_pinns, params, S_f, S_j, output_path)
 
-    save_results(model_final, loss_history, params_pinns, params, output_path)
+    save_results(pinn_system_final, loss_history, R_history, R_iteration_history, params_pinns, params, output_path)
     with open(output_path / "Data" / "S_f.pkl", "wb") as f: pickle.dump(S_f, f)
     with open(output_path / "Data" / "S_j.pkl", "wb") as f: pickle.dump(S_j, f)
     affichage(output_path)
