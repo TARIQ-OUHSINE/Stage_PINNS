@@ -512,7 +512,7 @@ if __name__ == "__main__":
         "def_t": max(exp_data[solid_data_key]["t"]),
         "name": f"{case_name}_On_corrected", 
         "R_vrai_m": R_vrai_m, 
-        "R_ini" : R_vrai_m / 2,
+        "R_ini" : R_vrai_m,
         "R_prime_m": R_vrai_m * 6.0,
     }
     coeff_normal = params["P0_j"]
